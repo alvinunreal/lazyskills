@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"lazyskills/internal/model"
 )
 
 func writeSkill(t *testing.T, dir, name, desc string) {
@@ -297,8 +299,14 @@ func TestSharedUniversalHealthIssuesAreDeduplicated(t *testing.T) {
 	if missingCount != 1 {
 		t.Fatalf("expected exactly one missing_skill_md issue, got %d issues=%#v", missingCount, res.Skills[0].HealthIssues)
 	}
-	if len(res.Skills[0].ObservedPaths) != 4 {
-		t.Fatalf("expected observed paths for universal/opencode/cursor/codex, got %#v", res.Skills[0].ObservedPaths)
+	seen := map[string]bool{}
+	for _, observed := range res.Skills[0].ObservedPaths {
+		seen[observed.Agent] = true
+	}
+	for _, agent := range []string{"universal", "opencode", "cursor", "codex"} {
+		if !seen[agent] {
+			t.Fatalf("expected observed path for %s, got %#v", agent, res.Skills[0].ObservedPaths)
+		}
 	}
 }
 
@@ -323,6 +331,102 @@ func TestSnapshotBoundary(t *testing.T) {
 	if len(res.Skills) != 1 || res.Skills[0].Name != "Build" {
 		t.Fatalf("unexpected scanner snapshot result: %#v", res.Skills)
 	}
+}
+
+func TestScanIncludesAgentStatesAndVisibilityReasons(t *testing.T) {
+	home := withHome(t)
+	cwd := t.TempDir()
+	writeSkill(t, filepath.Join(cwd, ".agents", "skills", "build"), "Build", "Build desc")
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Agents) < 70 {
+		t.Fatalf("expected upstream-compatible agent states, got %d", len(res.Agents))
+	}
+	if !agentState(res.Agents, "claude-code").Detected {
+		t.Fatalf("expected claude-code detected from cwd .claude")
+	}
+	if agentState(res.Agents, "promptscript").SupportsGlobal {
+		t.Fatalf("expected promptscript global unsupported")
+	}
+
+	sk := res.Skills[0]
+	if got := visibilityReason(sk.Visibility, "opencode"); got != "visible_via_universal_canonical" {
+		t.Fatalf("expected opencode universal visibility, got %q", got)
+	}
+	if got := visibilityReason(sk.Visibility, "claude-code"); got != "missing_agent_link" {
+		t.Fatalf("expected claude-code missing link visibility, got %q", got)
+	}
+	if got := visibilityReason(sk.Visibility, "augment"); got != "agent_not_detected" {
+		t.Fatalf("expected augment not detected visibility, got %q", got)
+	}
+}
+
+func TestUnsupportedGlobalAgentDoesNotGetGlobalCanonicalVisibility(t *testing.T) {
+	home := withHome(t)
+	cwd := t.TempDir()
+	writeSkill(t, filepath.Join(home, ".agents", "skills", "global-build"), "Global Build", "desc")
+
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sk := res.Skills[0]
+	if got := visibilityReason(sk.Visibility, "promptscript"); got != "unsupported_global" {
+		t.Fatalf("expected promptscript unsupported global, got %q visibility=%#v", got, sk.Visibility)
+	}
+	for _, observed := range sk.ObservedPaths {
+		if observed.Agent == "promptscript" && observed.Scope == model.ScopeGlobal {
+			t.Fatalf("promptscript should not observe global canonical skills: %#v", sk.ObservedPaths)
+		}
+	}
+}
+
+func TestGhostAgentDirectoryWithoutCanonicalDiagnostic(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+	writeSkill(t, filepath.Join(cwd, ".claude", "skills", "ghost"), "Ghost", "desc")
+
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sk := res.Skills[0]
+	if !hasIssue(sk.HealthIssues, "ghost_agent_skill") {
+		t.Fatalf("expected ghost_agent_skill issue, got %#v", sk.HealthIssues)
+	}
+}
+
+func agentState(states []model.AgentState, name string) model.AgentState {
+	for _, state := range states {
+		if state.Name == name {
+			return state
+		}
+	}
+	return model.AgentState{}
+}
+
+func visibilityReason(items []model.SkillVisibility, agent string) string {
+	for _, item := range items {
+		if item.Agent == agent {
+			return item.Reason
+		}
+	}
+	return ""
+}
+
+func hasIssue(issues []model.HealthIssue, issueType string) bool {
+	for _, issue := range issues {
+		if issue.Type == issueType {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSnapshotLoadsPreviewOnce(t *testing.T) {

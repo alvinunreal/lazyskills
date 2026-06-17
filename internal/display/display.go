@@ -15,6 +15,7 @@ type SkillView struct {
 	CanonicalPath string
 	SkillPath     string
 	Observed      []ObservedPathView
+	Visibility    []VisibilityView
 	LocalLock     *compat.LocalLockDisplay
 	GlobalLock    *compat.GlobalLockDisplay
 	HealthIssues  []HealthIssueView
@@ -36,6 +37,15 @@ type HealthIssueView struct {
 	Path     string
 }
 
+type VisibilityView struct {
+	Agent   string
+	Display string
+	Visible bool
+	Reason  string
+	Path    string
+	Status  string
+}
+
 func Skill(sk *model.Skill) SkillView {
 	if sk == nil {
 		return SkillView{}
@@ -54,6 +64,16 @@ func Skill(sk *model.Skill) SkillView {
 			Agent:      compat.SanitizeMetadata(p.Agent),
 			Status:     compat.SanitizeMetadata(string(p.Status)),
 			TargetPath: compat.SanitizeMetadata(p.TargetPath),
+		})
+	}
+	for _, visibility := range sk.Visibility {
+		view.Visibility = append(view.Visibility, VisibilityView{
+			Agent:   compat.SanitizeMetadata(visibility.Agent),
+			Display: compat.SanitizeMetadata(visibility.Display),
+			Visible: visibility.Visible,
+			Reason:  compat.SanitizeMetadata(visibility.Reason),
+			Path:    compat.SanitizeMetadata(visibility.Path),
+			Status:  compat.SanitizeMetadata(string(visibility.Status)),
 		})
 	}
 	if sk.LocalLock != nil {

@@ -22,6 +22,14 @@ func TestSkillViewSanitizesRenderedFields(t *testing.T) {
 			Agent:  "opencode\x07",
 			Status: model.StatusCanonical,
 		}},
+		Visibility: []model.SkillVisibility{{
+			Agent:   "opencode\x1b[31m",
+			Display: "Open\x1b[31mCode",
+			Visible: true,
+			Reason:  "visible\x1b[31m_via_universal_canonical",
+			Path:    "/tmp/\x1b[31mskill",
+			Status:  model.StatusCanonical,
+		}},
 		LocalLock: &model.LocalLockEntry{Source: "owner/\x1b[31mrepo", SkillPath: "skills/demo\r/SKILL.md"},
 		HealthIssues: []model.HealthIssue{{
 			Type:    "broken_symlink",
@@ -30,7 +38,7 @@ func TestSkillViewSanitizesRenderedFields(t *testing.T) {
 		}},
 	}
 	view := Skill(sk)
-	if strings.Contains(view.Name, "\x1b") || strings.Contains(view.Observed[0].Path, "\x1b") || strings.Contains(view.HealthIssues[0].Message, "\x1b") {
+	if strings.Contains(view.Name, "\x1b") || strings.Contains(view.Observed[0].Path, "\x1b") || strings.Contains(view.HealthIssues[0].Message, "\x1b") || strings.Contains(view.Visibility[0].Reason, "\x1b") {
 		t.Fatalf("expected sanitized view: %#v", view)
 	}
 	if view.Name != "Bad Name" || view.Description != "Line one Line two" || view.LocalLock.Source != "owner/repo" {

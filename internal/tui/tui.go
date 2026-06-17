@@ -302,6 +302,9 @@ func (m appModel) listPane(height, width int) string {
 	for i := start; i < end; i++ {
 		view := display.Skill(items[i])
 		label := fmt.Sprintf("%s [%s]", view.Name, view.Scope)
+		if m.agent != "" {
+			label += " " + agentVisibilityBadge(items[i], m.agent)
+		}
 		if len(view.HealthIssues) > 0 {
 			label += fmt.Sprintf(" !%d", len(view.HealthIssues))
 		}
@@ -341,6 +344,7 @@ func (m appModel) detailLines(width int) []string {
 	if m.agent != "" {
 		lines = append(lines, "Agent filter: "+m.agentLabel())
 	}
+	lines = append(lines, m.visibilitySummary(view)...)
 	lines = append(lines, "", "Observed")
 	for _, p := range view.Observed {
 		line := fmt.Sprintf("- %s %s %s", p.Agent, p.Scope, p.Status)
@@ -374,6 +378,36 @@ func (m appModel) detailLines(width int) []string {
 		}
 	}
 	return lines
+}
+
+func (m appModel) visibilitySummary(view display.SkillView) []string {
+	if len(view.Visibility) == 0 {
+		return nil
+	}
+	if m.agent != "" {
+		for _, visibility := range view.Visibility {
+			if visibility.Agent != m.agent {
+				continue
+			}
+			prefix := "cannot see"
+			if visibility.Visible {
+				prefix = "can see"
+			}
+			line := fmt.Sprintf("Visibility: %s %s (%s)", visibility.Display, prefix, visibility.Reason)
+			if visibility.Path != "" {
+				line += " at " + visibility.Path
+			}
+			return []string{wrapText(line, max(1, m.viewport.Width))}
+		}
+		return []string{"Visibility: no compatibility data for " + m.agentLabel()}
+	}
+	visible := 0
+	for _, visibility := range view.Visibility {
+		if visibility.Visible {
+			visible++
+		}
+	}
+	return []string{fmt.Sprintf("Visibility: %d/%d supported agents", visible, len(view.Visibility))}
 }
 
 func (m appModel) commandPreview(sk *model.Skill, width int) []string {
@@ -418,7 +452,7 @@ func (m appModel) filteredSkills() []*model.Skill {
 		if m.filter == scopeGlobal && sk.Scope != model.ScopeGlobal {
 			continue
 		}
-		if m.agent != "" && !skillObservedByAgent(sk, m.agent) {
+		if m.agent != "" && !skillRelevantToAgent(sk, m.agent) {
 			continue
 		}
 		if query != "" {
@@ -434,15 +468,37 @@ func (m appModel) filteredSkills() []*model.Skill {
 }
 
 func (m appModel) agentFilters() []string {
-	ids := []string{}
-	for _, agent := range agents.InitialAgents() {
+	if len(m.result.Agents) == 0 {
+		ids := []string{}
+		for _, agent := range agents.InitialAgents() {
+			if agent.Name == "universal" {
+				continue
+			}
+			ids = append(ids, agent.Name)
+		}
+		sort.Strings(ids)
+		return ids
+	}
+	observed := map[string]bool{}
+	for _, skill := range m.result.Skills {
+		for _, path := range skill.ObservedPaths {
+			observed[path.Agent] = true
+		}
+	}
+	detected, rest := []string{}, []string{}
+	for _, agent := range m.result.Agents {
 		if agent.Name == "universal" {
 			continue
 		}
-		ids = append(ids, agent.Name)
+		if agent.Detected || observed[agent.Name] {
+			detected = append(detected, agent.Name)
+		} else {
+			rest = append(rest, agent.Name)
+		}
 	}
-	sort.Strings(ids)
-	return ids
+	sort.Strings(detected)
+	sort.Strings(rest)
+	return append(detected, rest...)
 }
 
 func (m appModel) nextAgentFilter() string {
@@ -471,6 +527,34 @@ func skillObservedByAgent(sk *model.Skill, agent string) bool {
 		}
 	}
 	return false
+}
+
+func skillRelevantToAgent(sk *model.Skill, agent string) bool {
+	if skillObservedByAgent(sk, agent) {
+		return true
+	}
+	for _, visibility := range sk.Visibility {
+		if visibility.Agent == agent {
+			return true
+		}
+	}
+	return false
+}
+
+func agentVisibilityBadge(sk *model.Skill, agent string) string {
+	for _, visibility := range sk.Visibility {
+		if visibility.Agent != agent {
+			continue
+		}
+		if visibility.Visible {
+			return "✓ visible"
+		}
+		return "× " + compat.SanitizeMetadata(visibility.Reason)
+	}
+	if skillObservedByAgent(sk, agent) {
+		return "✓ observed"
+	}
+	return "× no data"
 }
 
 func (m appModel) agentLabel() string {

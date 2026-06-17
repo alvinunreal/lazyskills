@@ -35,6 +35,30 @@ type HealthIssue struct {
 	Path     string `json:"path,omitempty"`
 }
 
+// AgentState describes LazySkills' compatibility view of a supported agent.
+type AgentState struct {
+	Name             string `json:"name"`
+	Display          string `json:"display"`
+	Supported        bool   `json:"supported"`
+	Detected         bool   `json:"detected"`
+	Universal        bool   `json:"universal"`
+	SupportsGlobal   bool   `json:"supports_global"`
+	ProjectDir       string `json:"project_dir"`
+	GlobalDir        string `json:"global_dir,omitempty"`
+	ProjectDirExists bool   `json:"project_dir_exists"`
+	GlobalDirExists  bool   `json:"global_dir_exists,omitempty"`
+}
+
+// SkillVisibility explains whether one supported agent can see a skill.
+type SkillVisibility struct {
+	Agent   string `json:"agent"`
+	Display string `json:"display"`
+	Visible bool   `json:"visible"`
+	Reason  string `json:"reason"`
+	Path    string `json:"path,omitempty"`
+	Status  Status `json:"status,omitempty"`
+}
+
 // AddHealthIssue appends a health issue unless an identical issue already exists.
 func (sk *Skill) AddHealthIssue(issue HealthIssue) {
 	for _, existing := range sk.HealthIssues {
@@ -81,16 +105,17 @@ type GlobalLockFile struct {
 
 // Skill represents the consolidated view of a skill.
 type Skill struct {
-	Name          string           `json:"name"`
-	Description   string           `json:"description"`
-	Scope         Scope            `json:"scope"`
-	CanonicalPath string           `json:"canonical_path,omitempty"`
-	SkillPath     string           `json:"skill_path,omitempty"`
-	Preview       string           `json:"-"`
-	ObservedPaths []ObservedPath   `json:"observed_paths"`
-	LocalLock     *LocalLockEntry  `json:"local_lock,omitempty"`
-	GlobalLock    *GlobalLockEntry `json:"global_lock,omitempty"`
-	HealthIssues  []HealthIssue    `json:"health_issues"`
+	Name          string            `json:"name"`
+	Description   string            `json:"description"`
+	Scope         Scope             `json:"scope"`
+	CanonicalPath string            `json:"canonical_path,omitempty"`
+	SkillPath     string            `json:"skill_path,omitempty"`
+	Preview       string            `json:"-"`
+	ObservedPaths []ObservedPath    `json:"observed_paths"`
+	Visibility    []SkillVisibility `json:"visibility,omitempty"`
+	LocalLock     *LocalLockEntry   `json:"local_lock,omitempty"`
+	GlobalLock    *GlobalLockEntry  `json:"global_lock,omitempty"`
+	HealthIssues  []HealthIssue     `json:"health_issues"`
 }
 
 // ScanResult is the root schema produced by lazyskills scan --json.
@@ -98,6 +123,7 @@ type ScanResult struct {
 	Cwd          string        `json:"cwd"`
 	GlobalLock   string        `json:"global_lock_path,omitempty"`
 	ProjectLock  string        `json:"project_lock_path,omitempty"`
+	Agents       []AgentState  `json:"agents,omitempty"`
 	Skills       []*Skill      `json:"skills"`
 	HealthIssues []HealthIssue `json:"health_issues,omitempty"`
 }

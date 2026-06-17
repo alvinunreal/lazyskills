@@ -62,15 +62,15 @@ func TestNextAgentFilterCyclesThroughObservedAgents(t *testing.T) {
 		{Name: "A", ObservedPaths: []model.ObservedPath{{Agent: "opencode"}, {Agent: "cursor"}}},
 	}}}
 	first := m.nextAgentFilter()
-	if first != "claude-code" {
-		t.Fatalf("expected first supported agent claude-code, got %q", first)
+	if first != "adal" {
+		t.Fatalf("expected first supported agent adal, got %q", first)
 	}
 	m.agent = first
 	second := m.nextAgentFilter()
-	if second != "codex" {
-		t.Fatalf("expected second supported agent codex, got %q", second)
+	if second != "aider-desk" {
+		t.Fatalf("expected second supported agent aider-desk, got %q", second)
 	}
-	m.agent = "opencode"
+	m.agent = "zenflow"
 	if got := m.nextAgentFilter(); got != "" {
 		t.Fatalf("expected cycle back to all, got %q", got)
 	}
@@ -110,6 +110,38 @@ func TestCommandPreviewModeRendersWithoutExecuting(t *testing.T) {
 	out := m.View()
 	if !strings.Contains(out, "Command previews") || !strings.Contains(out, "Preview only") || !strings.Contains(out, "npx skills") {
 		t.Fatalf("expected command previews in output: %q", out)
+	}
+}
+
+func TestActiveAgentVisibilityReasonIsRendered(t *testing.T) {
+	m := appModel{width: 120, height: 32, agent: "claude-code", result: model.ScanResult{Skills: []*model.Skill{{
+		Name:        "Build",
+		Description: "desc",
+		Scope:       model.ScopeProject,
+		Visibility:  []model.SkillVisibility{{Agent: "claude-code", Display: "Claude Code", Visible: false, Reason: "missing_agent_link"}},
+	}}}}
+	out := m.View()
+	if !strings.Contains(out, "Build") || !strings.Contains(out, "Claude Code cannot see") || !strings.Contains(out, "missing_agent_link") {
+		t.Fatalf("expected active agent visibility reason, got %q", out)
+	}
+}
+
+func TestAgentFilterListMarksNonVisibleSkills(t *testing.T) {
+	m := appModel{width: 120, height: 32, agent: "claude-code", result: model.ScanResult{Skills: []*model.Skill{
+		{
+			Name:       "Visible",
+			Scope:      model.ScopeProject,
+			Visibility: []model.SkillVisibility{{Agent: "claude-code", Display: "Claude Code", Visible: true, Reason: "visible_via_symlink"}},
+		},
+		{
+			Name:       "Missing",
+			Scope:      model.ScopeProject,
+			Visibility: []model.SkillVisibility{{Agent: "claude-code", Display: "Claude Code", Visible: false, Reason: "missing_agent_link"}},
+		},
+	}}}
+	out := m.View()
+	if !strings.Contains(out, "Visible [project] ✓ visible") || !strings.Contains(out, "Missing [project] × missing_agent_l") {
+		t.Fatalf("expected list-level visibility badges, got %q", out)
 	}
 }
 

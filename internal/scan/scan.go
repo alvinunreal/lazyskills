@@ -27,6 +27,7 @@ func Run(cwd string) (model.ScanResult, error) {
 	}
 
 	res := model.ScanResult{Cwd: absCwd, ProjectLock: locks.ProjectLockPath(absCwd), GlobalLock: locks.GlobalLockPath()}
+	res.Agents = agentStates(absCwd)
 	skills := map[string]*model.Skill{}
 
 	localLock, err := locks.ReadLocal(res.ProjectLock)
@@ -69,7 +70,11 @@ func Run(cwd string) (model.ScanResult, error) {
 			if sk.Scope == model.ScopeGlobal && sk.GlobalLock == nil {
 				sk.AddHealthIssue(model.HealthIssue{Type: "missing_global_lock", Severity: "warning", Message: "global skill is present on disk but not found in global lock"})
 			}
+			if sk.CanonicalPath == "" && hasNonCanonicalObservation(sk) {
+				sk.AddHealthIssue(model.HealthIssue{Type: "ghost_agent_skill", Severity: "warning", Message: "skill exists in an agent-specific directory without a canonical .agents/skills copy"})
+			}
 		}
+		sk.Visibility = skillVisibility(sk, res.Agents)
 		res.Skills = append(res.Skills, sk)
 	}
 	sort.Slice(res.Skills, func(i, j int) bool {
@@ -80,6 +85,98 @@ func Run(cwd string) (model.ScanResult, error) {
 		return left < right
 	})
 	return res, nil
+}
+
+func hasNonCanonicalObservation(sk *model.Skill) bool {
+	for _, observed := range sk.ObservedPaths {
+		if observed.Status != model.StatusCanonical {
+			return true
+		}
+	}
+	return false
+}
+
+func agentStates(cwd string) []model.AgentState {
+	registry := agents.RegistryWithEnv(agents.DefaultEnv(), cwd)
+	states := make([]model.AgentState, 0, len(registry))
+	for _, agent := range registry {
+		projectDir := filepath.Join(cwd, filepath.FromSlash(agent.ProjectDir))
+		state := model.AgentState{
+			Name:             agent.Name,
+			Display:          compat.SanitizeMetadata(agent.Display),
+			Supported:        true,
+			Detected:         agent.Detected,
+			Universal:        agent.Universal,
+			SupportsGlobal:   agent.SupportsGlobal,
+			ProjectDir:       projectDir,
+			GlobalDir:        agent.GlobalDir,
+			ProjectDirExists: pathExists(projectDir),
+			GlobalDirExists:  agent.SupportsGlobal && pathExists(agent.GlobalDir),
+		}
+		states = append(states, state)
+	}
+	return states
+}
+
+func pathExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func skillVisibility(sk *model.Skill, states []model.AgentState) []model.SkillVisibility {
+	visibility := make([]model.SkillVisibility, 0, len(states))
+	for _, state := range states {
+		item := model.SkillVisibility{Agent: state.Name, Display: state.Display}
+		if observed, ok := observedForAgent(sk, state.Name); ok {
+			item.Visible = observed.Status != model.StatusBrokenSymlink
+			item.Path = observed.Path
+			item.Status = observed.Status
+			switch observed.Status {
+			case model.StatusCanonical:
+				if state.Universal {
+					item.Reason = "visible_via_universal_canonical"
+				} else {
+					item.Reason = "visible_via_canonical"
+				}
+			case model.StatusSymlink:
+				item.Reason = "visible_via_symlink"
+			case model.StatusCopy:
+				item.Reason = "visible_via_copy"
+			case model.StatusBrokenSymlink:
+				item.Reason = "broken_symlink"
+			default:
+				item.Reason = "visible"
+			}
+			visibility = append(visibility, item)
+			continue
+		}
+
+		item.Visible = false
+		switch {
+		case sk.Scope == model.ScopeGlobal && !state.SupportsGlobal:
+			item.Reason = "unsupported_global"
+		case !state.Detected:
+			item.Reason = "agent_not_detected"
+		case state.Universal:
+			item.Reason = "not_in_universal_canonical_dir"
+		default:
+			item.Reason = "missing_agent_link"
+		}
+		visibility = append(visibility, item)
+	}
+	return visibility
+}
+
+func observedForAgent(sk *model.Skill, agent string) (model.ObservedPath, bool) {
+	for _, observed := range sk.ObservedPaths {
+		if observed.Agent == agent {
+			return observed, true
+		}
+	}
+	return model.ObservedPath{}, false
 }
 
 func scanLocation(loc agents.Location, skills map[string]*model.Skill) {
