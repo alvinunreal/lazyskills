@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "updatedAt": "2026-06-17T00:00:00.000Z",
+  "dependencies": [
+    {
+      "name": "vercel-labs/skills",
+      "resolvedVersion": "be0dd25b4a8665894a56f45ef582cc02ca802c39",
+      "repoUrl": "https://github.com/vercel-labs/skills.git",
+      "ref": "be0dd25b4a8665894a56f45ef582cc02ca802c39",
+      "path": ".slim/clonedeps/repos/vercel-labs__skills",
+      "packagePath": null,
+      "reason": "Skill definitions and examples are useful reference material for the new project."
+    }
+  ]
+}
