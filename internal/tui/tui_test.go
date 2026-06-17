@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -124,9 +125,10 @@ func TestCommandPreviewToggle(t *testing.T) {
 func TestDetailPaneClipsLongPreview(t *testing.T) {
 	preview := strings.Repeat("line\n", 80)
 	m := appModel{width: 100, height: 20, result: model.ScanResult{Skills: []*model.Skill{{Name: "Long", Description: "desc", Scope: model.ScopeProject, Preview: preview}}}}
-	out := m.detailPane(8, 40)
+	m.syncViewport()
+	out := m.detailPane()
 	lines := strings.Split(out, "\n")
-	if len(lines) > 8 {
+	if len(lines) > m.viewport.Height {
 		t.Fatalf("detail pane overflowed: got %d lines\n%s", len(lines), out)
 	}
 }
@@ -150,13 +152,68 @@ func TestDetailScrollKeysMoveViewport(t *testing.T) {
 func TestFullViewFitsTerminalDimensionsWithLongPreview(t *testing.T) {
 	preview := strings.Repeat("a very long line that should be clipped and not wrap the entire screen\n", 120)
 	m := appModel{width: 100, height: 24, result: model.ScanResult{Skills: []*model.Skill{{Name: "Long", Description: strings.Repeat("description ", 30), Scope: model.ScopeProject, Preview: preview}}}}
+	assertViewFits(t, m, 100, 24)
+}
+
+func TestSmallTerminalFallbackFitsTinyHeights(t *testing.T) {
+	for _, height := range []int{4, 5, 6} {
+		t.Run(fmt.Sprintf("height_%d", height), func(t *testing.T) {
+			m := appModel{width: 80, height: height, result: model.ScanResult{Skills: []*model.Skill{{Name: "Long", Description: "desc", Scope: model.ScopeProject}}}}
+			out := m.View()
+			assertRenderedSize(t, out, 80, height)
+			if strings.Contains(out, "╭") || strings.Contains(out, "╰") {
+				t.Fatalf("tiny terminal should render fallback, not cards: %q", out)
+			}
+		})
+	}
+}
+
+func TestResponsiveViewFitsCommonTerminalSizes(t *testing.T) {
+	preview := strings.Repeat("a very long line that should reflow into the detail viewport without breaking borders\n", 100)
+	sizes := []struct {
+		width  int
+		height int
+	}{
+		{40, 7},
+		{60, 12},
+		{80, 20},
+		{100, 24},
+		{120, 40},
+	}
+	for _, size := range sizes {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			m := appModel{width: size.width, height: size.height, result: model.ScanResult{Skills: []*model.Skill{{Name: "Long", Description: strings.Repeat("description ", 12), Scope: model.ScopeProject, Preview: preview}}}}
+			assertViewFits(t, m, size.width, size.height)
+		})
+	}
+}
+
+func TestNormalViewPreservesBottomBorders(t *testing.T) {
+	m := appModel{width: 100, height: 24, result: model.ScanResult{Skills: []*model.Skill{{Name: "Build", Description: "desc", Scope: model.ScopeProject}}}}
 	out := m.View()
-	if got := lipgloss.Height(out); got > 24 {
-		t.Fatalf("view height overflowed: got %d want <= 24\n%s", got, out)
+	assertRenderedSize(t, out, 100, 24)
+	if got := strings.Count(out, "╰"); got != 3 {
+		t.Fatalf("expected three complete bottom-left borders, got %d\n%s", got, out)
+	}
+	if got := strings.Count(out, "╯"); got != 3 {
+		t.Fatalf("expected three complete bottom-right borders, got %d\n%s", got, out)
+	}
+}
+
+func assertViewFits(t *testing.T, m appModel, width, height int) {
+	t.Helper()
+	out := m.View()
+	assertRenderedSize(t, out, width, height)
+}
+
+func assertRenderedSize(t *testing.T, out string, width, height int) {
+	t.Helper()
+	if got := lipgloss.Height(out); got > height {
+		t.Fatalf("view height overflowed: got %d want <= %d\n%s", got, height, out)
 	}
 	for i, line := range strings.Split(out, "\n") {
-		if width := lipgloss.Width(line); width > 100 {
-			t.Fatalf("line %d width overflowed: got %d want <= 100\n%s", i, width, line)
+		if got := lipgloss.Width(line); got > width {
+			t.Fatalf("line %d width overflowed: got %d want <= %d\n%s", i, got, width, line)
 		}
 	}
 }

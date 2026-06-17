@@ -42,6 +42,29 @@ type appModel struct {
 	viewport  viewport.Model
 }
 
+type paneLayout struct {
+	OuterWidth    int
+	OuterHeight   int
+	StyleWidth    int
+	StyleHeight   int
+	ContentWidth  int
+	ContentHeight int
+}
+
+type appLayout struct {
+	Small  bool
+	Width  int
+	Height int
+	Left   paneLayout
+	List   paneLayout
+	Detail paneLayout
+}
+
+const (
+	minLayoutWidth  = 40
+	minLayoutHeight = 7
+)
+
 var (
 	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
 	borderStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
@@ -157,12 +180,18 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *appModel) syncViewport() {
-	_, _, detailOuter := paneOuterWidths(max(1, m.width))
-	detailInner := max(1, detailOuter-4)
-	innerHeight := max(1, max(8, m.height-2)-2)
-	m.viewport.Width = detailInner
-	m.viewport.Height = innerHeight
-	m.viewport.SetContent(m.detailText(detailInner))
+	layout := newAppLayout(m.width, m.height)
+	if layout.Small {
+		m.viewport.Width = 0
+		m.viewport.Height = 0
+		m.viewport.SetContent("")
+		m.viewport.SetYOffset(0)
+		return
+	}
+	m.viewport.Width = layout.Detail.ContentWidth
+	m.viewport.Height = layout.Detail.ContentHeight
+	m.viewport.SetContent(m.detailText(layout.Detail.ContentWidth))
+	m.clampViewportOffset()
 }
 
 func (m *appModel) clampSelection() {
@@ -181,33 +210,31 @@ func (m *appModel) clampSelection() {
 
 func (m appModel) View() string {
 	if m.err != nil {
-		return errorStyle.Render(fmt.Sprintf("LazySkills error: %s\n\nPress q to quit.", compat.SanitizeMetadata(m.err.Error())))
+		return fitToScreen(errorStyle.Render(fmt.Sprintf("LazySkills error: %s\n\nPress q to quit.", compat.SanitizeMetadata(m.err.Error()))), viewWidth(m.width), viewHeight(m.height))
 	}
-	if m.width == 0 {
-		m.width = 100
-	}
-	if m.height == 0 {
-		m.height = 32
+	layout := newAppLayout(m.width, m.height)
+	if layout.Small {
+		return smallTerminalView(layout.Width, layout.Height)
 	}
 
-	outerHeight := max(8, m.height-2)
-	innerHeight := max(1, outerHeight-2)
-	leftOuter, listOuter, detailOuter := paneOuterWidths(m.width)
-	leftInner := max(1, leftOuter-4)
-	listInner := max(1, listOuter-4)
-	detailInner := max(1, detailOuter-4)
+	// Keep View pure for callers: sync a local copy so render-time fallback
+	// sizing does not mutate the model stored by Bubble Tea.
+	viewModel := m
+	viewModel.width = layout.Width
+	viewModel.height = layout.Height
+	viewModel.syncViewport()
 
-	leftStyle := borderStyle.Width(leftInner).MaxWidth(leftInner).Height(innerHeight).MaxHeight(innerHeight)
-	listStyle := borderStyle.Width(listInner).MaxWidth(listInner).Height(innerHeight).MaxHeight(innerHeight)
-	detailStyle := borderStyle.Width(detailInner).MaxWidth(detailInner).Height(innerHeight).MaxHeight(innerHeight)
-	left := leftStyle.Render(fitLines(m.filterPane(), innerHeight))
-	list := listStyle.Render(fitLines(m.listPane(innerHeight), innerHeight))
-	detail := detailStyle.Render(m.detailPane(innerHeight, detailInner))
-	footer := m.footer()
+	leftStyle := paneStyle(layout.Left)
+	listStyle := paneStyle(layout.List)
+	detailStyle := paneStyle(layout.Detail)
+	left := leftStyle.Render(fitLines(viewModel.filterPane(layout.Left.ContentWidth), layout.Left.ContentHeight))
+	list := listStyle.Render(fitLines(viewModel.listPane(layout.List.ContentHeight, layout.List.ContentWidth), layout.List.ContentHeight))
+	detail := detailStyle.Render(viewModel.detailPane())
+	footer := fitToScreen(viewModel.footer(), layout.Width, 1)
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, list, detail) + "\n" + footer
 }
 
-func (m appModel) filterPane() string {
+func (m appModel) filterPane(width int) string {
 	counts := map[model.Scope]int{}
 	issues := 0
 	for _, sk := range m.result.Skills {
@@ -230,7 +257,7 @@ func (m appModel) filterPane() string {
 	if len(m.result.HealthIssues) > 0 {
 		lines = append(lines, "", errorStyle.Render("Scan health"))
 		for _, issue := range m.result.HealthIssues {
-			lines = append(lines, truncate(fmt.Sprintf("- %s: %s", compat.SanitizeMetadata(issue.Type), compat.SanitizeMetadata(issue.Message)), 36))
+			lines = append(lines, truncate(fmt.Sprintf("- %s: %s", compat.SanitizeMetadata(issue.Type), compat.SanitizeMetadata(issue.Message)), width))
 		}
 	}
 	if m.search != "" || m.searching {
@@ -253,7 +280,7 @@ func filterLine(label string, active bool) string {
 	return "  " + label
 }
 
-func (m appModel) listPane(height int) string {
+func (m appModel) listPane(height, width int) string {
 	items := m.filteredSkills()
 	lines := []string{titleStyle.Render("Skills")}
 	if len(items) == 0 {
@@ -279,20 +306,15 @@ func (m appModel) listPane(height int) string {
 			label += fmt.Sprintf(" !%d", len(view.HealthIssues))
 		}
 		if i == m.selected {
-			lines = append(lines, selectedStyle.Render(truncate(label, 48)))
+			lines = append(lines, selectedStyle.Render(truncate(label, width)))
 		} else {
-			lines = append(lines, truncate(label, 48))
+			lines = append(lines, truncate(label, width))
 		}
 	}
 	return strings.Join(lines, "\n")
 }
 
-func (m appModel) detailPane(height, width int) string {
-	if m.viewport.Width != width || m.viewport.Height != height || m.viewport.View() == "" {
-		m.viewport.Width = width
-		m.viewport.Height = height
-		m.viewport.SetContent(m.detailText(width))
-	}
+func (m appModel) detailPane() string {
 	return m.viewport.View()
 }
 
@@ -341,7 +363,7 @@ func (m appModel) detailLines(width int) []string {
 	}
 	if m.commands {
 		lines = append(lines, "")
-		lines = append(lines, m.commandPreview(items[m.selected], width-4)...)
+		lines = append(lines, m.commandPreview(items[m.selected], max(1, width-4))...)
 		return lines
 	}
 	if view.Preview != "" {
@@ -532,6 +554,76 @@ func fitToScreen(s string, width, height int) string {
 		lines[i] = line
 	}
 	return strings.Join(lines, "\n")
+}
+
+func viewWidth(width int) int {
+	if width > 0 {
+		return width
+	}
+	return 100
+}
+
+func viewHeight(height int) int {
+	if height > 0 {
+		return height
+	}
+	return 32
+}
+
+func newAppLayout(width, height int) appLayout {
+	width = viewWidth(width)
+	height = viewHeight(height)
+	layout := appLayout{Width: width, Height: height}
+	if width < minLayoutWidth || height < minLayoutHeight {
+		layout.Small = true
+		return layout
+	}
+
+	leftOuter, listOuter, detailOuter := paneOuterWidths(width)
+	paneHeight := height - 1 // reserve one row for the footer
+	layout.Left = newPaneLayout(leftOuter, paneHeight)
+	layout.List = newPaneLayout(listOuter, paneHeight)
+	layout.Detail = newPaneLayout(detailOuter, paneHeight)
+	return layout
+}
+
+func newPaneLayout(outerWidth, outerHeight int) paneLayout {
+	contentWidth := max(1, outerWidth-borderStyle.GetHorizontalFrameSize())
+	contentHeight := max(1, outerHeight-borderStyle.GetVerticalFrameSize())
+	return paneLayout{
+		OuterWidth:    outerWidth,
+		OuterHeight:   outerHeight,
+		StyleWidth:    contentWidth + borderStyle.GetHorizontalPadding(),
+		StyleHeight:   contentHeight + borderStyle.GetVerticalPadding(),
+		ContentWidth:  contentWidth,
+		ContentHeight: contentHeight,
+	}
+}
+
+func paneStyle(p paneLayout) lipgloss.Style {
+	return borderStyle.
+		Width(p.StyleWidth).
+		Height(p.StyleHeight).
+		MaxWidth(p.OuterWidth).
+		MaxHeight(p.OuterHeight)
+}
+
+func smallTerminalView(width, height int) string {
+	message := "Terminal too small. Please resize."
+	if height >= 2 && width >= 22 {
+		message = "Terminal too small.\nPlease resize."
+	}
+	return fitToScreen(message, width, height)
+}
+
+func (m *appModel) clampViewportOffset() {
+	maxOffset := max(0, m.viewport.TotalLineCount()-m.viewport.Height)
+	if m.viewport.YOffset > maxOffset {
+		m.viewport.SetYOffset(maxOffset)
+	}
+	if m.viewport.YOffset < 0 {
+		m.viewport.SetYOffset(0)
+	}
 }
 
 func min(a, b int) int {
