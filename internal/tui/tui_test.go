@@ -224,6 +224,66 @@ func TestActionConfirmationCancelDoesNotExecute(t *testing.T) {
 	}
 }
 
+func TestConfirmationAcceptsDefaultYAndYes(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"default_enter", ""},
+		{"y", "y"},
+		{"yes", "yes"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			old := runExec
+			runExec = func(spec runner.ExecSpec) runner.Result { called = true; return runner.Result{ExitCode: 0} }
+			t.Cleanup(func() { runExec = old })
+
+			m := actionTestModel(t.TempDir())
+			m.commands = true
+			m.action = actionIndex(t, m, "Reinstall/update selected skill")
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			m = updated.(appModel)
+			for _, r := range []rune(tc.input) {
+				updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+				m = updated.(appModel)
+			}
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			m = updated.(appModel)
+			if cmd == nil || !m.running {
+				t.Fatalf("expected accepted confirmation to run, input=%q running=%v cmd=%v", tc.input, m.running, cmd)
+			}
+			cmd()
+			if !called {
+				t.Fatalf("expected command execution")
+			}
+		})
+	}
+}
+
+func TestConfirmationRendersCenteredModal(t *testing.T) {
+	m := actionTestModel(t.TempDir())
+	m.commands = true
+	m.action = actionIndex(t, m, "Reinstall/update selected skill")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	out := m.View()
+	if !strings.Contains(out, "Confirm") || !strings.Contains(out, "Press Enter or y to confirm") || strings.Contains(out, "Bulk actions") {
+		t.Fatalf("expected standalone confirmation modal, got %q", out)
+	}
+}
+
+func TestRunningActionRendersProgressModal(t *testing.T) {
+	m := actionTestModel(t.TempDir())
+	m.running = true
+	m.runningTitle = "Reinstall/update selected skill"
+	out := m.View()
+	if !strings.Contains(out, "Running") || !strings.Contains(out, "Reinstall/update selected skill") || !strings.Contains(out, "Working") {
+		t.Fatalf("expected running progress modal, got %q", out)
+	}
+}
+
 func TestActionExecUsesProjectCwdAndPreventsDuplicateWhileRunning(t *testing.T) {
 	cwd := t.TempDir()
 	old := runExec
@@ -387,6 +447,130 @@ func TestBulkPartialFailureRescansAndKeepsSelection(t *testing.T) {
 	}
 }
 
+func TestDirectUpdateHotkeyStartsCurrentOrBulkAction(t *testing.T) {
+	m := actionTestModel(t.TempDir())
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	next := updated.(appModel)
+	if cmd != nil || next.commands || !next.confirming || next.currentActions()[next.action].ID != "reinstall_update" {
+		t.Fatalf("expected u to open current-skill update confirmation without actions, action=%#v confirming=%v commands=%v cmd=%v", next.currentActions()[next.action], next.confirming, next.commands, cmd)
+	}
+	m = bulkActionTestModel(t.TempDir())
+	m.selectedKeys = map[string]bool{skillKey(m.result.Skills[0]): true, skillKey(m.result.Skills[1]): true}
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	next = updated.(appModel)
+	if cmd != nil || next.commands || !next.confirming || next.currentActions()[next.action].ID != "bulk_reinstall_update" {
+		t.Fatalf("expected u to open bulk update confirmation without actions, action=%#v confirming=%v commands=%v cmd=%v", next.currentActions()[next.action], next.confirming, next.commands, cmd)
+	}
+}
+
+func TestDirectRemoveHotkeyStartsStrictConfirmation(t *testing.T) {
+	m := actionTestModel(t.TempDir())
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	next := updated.(appModel)
+	if cmd != nil || next.commands || !next.confirming || next.currentActions()[next.action].ID != "remove" || next.currentActions()[next.action].ConfirmValue != "deploy-skill" {
+		t.Fatalf("expected x to open single remove confirmation without actions, action=%#v confirming=%v commands=%v cmd=%v", next.currentActions()[next.action], next.confirming, next.commands, cmd)
+	}
+}
+
+func TestDirectOpenHotkeyUsesCurrentSkillEvenWithBulkSelection(t *testing.T) {
+	t.Setenv("EDITOR", "vim")
+	m := bulkActionTestModel(t.TempDir())
+	m.result.Skills[0].SkillPath = "/tmp/one/SKILL.md"
+	m.selectedKeys = map[string]bool{skillKey(m.result.Skills[1]): true}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	next := updated.(appModel)
+	if cmd == nil || !next.running || next.commands {
+		t.Fatalf("expected o to start interactive open without opening actions, running=%v commands=%v cmd=%v", next.running, next.commands, cmd)
+	}
+}
+
+func TestDirectOpenHotkeyClosesExistingActionMode(t *testing.T) {
+	t.Setenv("EDITOR", "vim")
+	m := actionTestModel(t.TempDir())
+	m.result.Skills[0].SkillPath = "/tmp/deploy-skill/SKILL.md"
+	m.commands = true
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	next := updated.(appModel)
+	if cmd == nil || !next.running || next.commands {
+		t.Fatalf("expected o to close action mode before opening editor, running=%v commands=%v cmd=%v", next.running, next.commands, cmd)
+	}
+}
+
+func TestSourceMarkSelectsCurrentSource(t *testing.T) {
+	m := appModel{width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{
+		{Name: "One", Scope: model.ScopeProject, CanonicalPath: "/tmp/one", LocalLock: &model.LocalLockEntry{Source: "owner/repo", SkillPath: "skills/web/SKILL.md"}},
+		{Name: "Two", Scope: model.ScopeProject, CanonicalPath: "/tmp/two", LocalLock: &model.LocalLockEntry{Source: "owner/repo", SkillPath: "skills/web/SKILL.md"}},
+		{Name: "Other", Scope: model.ScopeProject, CanonicalPath: "/tmp/other", LocalLock: &model.LocalLockEntry{Source: "owner/repo", SkillPath: "skills/data/SKILL.md"}},
+		{Name: "Global", Scope: model.ScopeGlobal, CanonicalPath: "/tmp/global", GlobalLock: &model.GlobalLockEntry{Source: "owner/repo"}},
+		{Name: "Different", Scope: model.ScopeProject, CanonicalPath: "/tmp/different", LocalLock: &model.LocalLockEntry{Source: "other/repo", SkillPath: "skills/web/SKILL.md"}},
+	}}}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	next := updated.(appModel)
+	if next.selectedCount() != 4 || !next.isSelected(next.result.Skills[0]) || !next.isSelected(next.result.Skills[1]) || !next.isSelected(next.result.Skills[2]) || !next.isSelected(next.result.Skills[3]) || next.isSelected(next.result.Skills[4]) {
+		t.Fatalf("expected source mark to select all skills from owner/repo only, selected=%#v", next.selectedKeys)
+	}
+}
+
+func TestSourceMarkOnlySelectsFilteredSkills(t *testing.T) {
+	m := appModel{width: 120, height: 32, search: "one", result: model.ScanResult{Skills: []*model.Skill{
+		{Name: "One", Scope: model.ScopeProject, CanonicalPath: "/tmp/one", LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+		{Name: "Two", Scope: model.ScopeProject, CanonicalPath: "/tmp/two", LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+	}}}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	next := updated.(appModel)
+	if next.selectedCount() != 1 || !next.isSelected(next.result.Skills[0]) || next.isSelected(next.result.Skills[1]) {
+		t.Fatalf("expected source mark to select only visible filtered skills, selected=%#v", next.selectedKeys)
+	}
+}
+
+func TestSourceAndFolderDetailsRender(t *testing.T) {
+	m := appModel{width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{{
+		Name: "One", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo", SkillPath: "skills/web/SKILL.md", Ref: "main"},
+	}}}}
+	out := m.View()
+	if !strings.Contains(out, "Source: owner/repo") || !strings.Contains(out, "Folder: skills/web") || !strings.Contains(out, "Ref: main") {
+		t.Fatalf("expected source/folder/ref details, got %q", out)
+	}
+}
+
+func TestSkillListShowsSourceGroups(t *testing.T) {
+	m := appModel{width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{
+		{Name: "One", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo", SkillPath: "skills/web/SKILL.md"}},
+		{Name: "Two", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo", SkillPath: "skills/web/SKILL.md"}},
+		{Name: "Other", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo", SkillPath: "skills/data/SKILL.md"}},
+	}}}
+	out := m.View()
+	if !strings.Contains(out, "owner/repo") {
+		t.Fatalf("expected source group header, got %q", out)
+	}
+	if strings.Count(out, "─ owner/repo") != 1 || strings.Contains(out, "owner/repo / skills/web") || strings.Contains(out, "owner/repo / skills/data") {
+		t.Fatalf("expected one repo-level group header, got %q", out)
+	}
+}
+
+func TestSkillListSeparatesNoSourceMetadata(t *testing.T) {
+	m := appModel{width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{
+		{Name: "Tracked", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+		{Name: "Manual", Scope: model.ScopeProject},
+	}}}
+	out := m.View()
+	if !strings.Contains(out, "─ owner/repo") || !strings.Contains(out, "─ No source metadata") {
+		t.Fatalf("expected explicit source and no-source groups, got %q", out)
+	}
+}
+
+func TestGroupedListKeepsSelectedRowVisible(t *testing.T) {
+	skills := []*model.Skill{}
+	for i := 0; i < 12; i++ {
+		skills = append(skills, &model.Skill{Name: fmt.Sprintf("Skill %02d", i), Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: fmt.Sprintf("owner/repo-%02d", i)}})
+	}
+	m := appModel{width: 120, height: 10, selected: 11, result: model.ScanResult{Skills: skills}}
+	out := m.View()
+	if !strings.Contains(out, "Skill 11 [project]") {
+		t.Fatalf("expected selected row visible with many group headers, got %q", out)
+	}
+}
+
 func TestFailedMutationDoesNotTriggerRescan(t *testing.T) {
 	cwd := t.TempDir()
 	old := runExec
@@ -429,7 +613,7 @@ func TestRemoveRequiresExactTypedIdentity(t *testing.T) {
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(appModel)
-	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, "Confirmation did not match") || m.actionResult != nil {
+	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, "Type yes") || m.actionResult != nil {
 		t.Fatalf("expected inline confirmation error without command, confirming=%v err=%q result=%#v cmd=%v", m.confirming, m.confirmError, m.actionResult, cmd)
 	}
 }

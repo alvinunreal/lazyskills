@@ -45,6 +45,7 @@ type appModel struct {
 	confirmInput string
 	confirmError string
 	running      bool
+	runningTitle string
 	actionResult *runner.Result
 	width        int
 	height       int
@@ -139,6 +140,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncViewport()
 	case actionResultMsg:
 		m.running = false
+		m.runningTitle = ""
 		m.confirming = false
 		m.confirmInput = ""
 		m.actionResult = &msg.result
@@ -164,6 +166,12 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirming = false
 				m.confirmInput = ""
 				m.confirmError = ""
+			case "n":
+				if m.confirmInput == "" {
+					m.confirming = false
+					m.confirmInput = ""
+					m.confirmError = ""
+				}
 			case "pgdown", "ctrl+d", "pgup", "ctrl+u":
 				var cmd tea.Cmd
 				m.viewport, cmd = m.viewport.Update(msg)
@@ -242,6 +250,16 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toggleSelectedSkill()
 			m.action = 0
 			m.actionResult = nil
+		case "s":
+			m.selectCurrentSourceGroup()
+			m.action = 0
+			m.actionResult = nil
+		case "o":
+			return m.startCurrentSkillActionByID("open_skill")
+		case "u":
+			return m.startActionByID(preferredUpdateActionID(m.selectedCount()))
+		case "x":
+			return m.startActionByID(preferredRemoveActionID(m.selectedCount()))
 		case "/":
 			m.searching = true
 		case "enter":
@@ -353,19 +371,69 @@ func (m appModel) startAction() (tea.Model, tea.Cmd) {
 	return m.executeAction(action)
 }
 
+func (m appModel) startActionByID(id string) (tea.Model, tea.Cmd) {
+	if id == "" {
+		return m, nil
+	}
+	for i, action := range m.currentActions() {
+		if action.ID == id {
+			m.action = i
+			m.commands = false
+			return m.startAction()
+		}
+	}
+	return m, nil
+}
+
+func (m appModel) startCurrentSkillActionByID(id string) (tea.Model, tea.Cmd) {
+	items := m.filteredSkills()
+	if len(items) == 0 || m.selected >= len(items) {
+		return m, nil
+	}
+	for _, action := range actions.ForSkill(items[m.selected]) {
+		if action.ID == id {
+			if !action.Available {
+				return m, nil
+			}
+			m.commands = false
+			return m.executeAction(action)
+		}
+	}
+	return m, nil
+}
+
+func preferredUpdateActionID(selectedCount int) string {
+	if selectedCount > 0 {
+		return "bulk_reinstall_update"
+	}
+	return "reinstall_update"
+}
+
+func preferredRemoveActionID(selectedCount int) string {
+	if selectedCount > 0 {
+		return "bulk_remove"
+	}
+	return "remove"
+}
+
 func (m appModel) confirmAction() (tea.Model, tea.Cmd) {
 	actions := m.currentActions()
 	if len(actions) == 0 || m.action >= len(actions) {
 		return m, nil
 	}
 	action := actions[m.action]
-	if m.confirmInput != action.ConfirmValue {
-		m.confirmError = "Confirmation did not match. Try again or press Esc to cancel."
+	if !confirmationAccepted(m.confirmInput, action.ConfirmValue) {
+		m.confirmError = "Type yes, y, or the displayed phrase. Press Esc to cancel."
 		m.confirmInput = ""
 		m.syncViewport()
 		return m, nil
 	}
 	return m.executeAction(action)
+}
+
+func confirmationAccepted(input, confirmValue string) bool {
+	value := strings.TrimSpace(strings.ToLower(input))
+	return value == "" || value == "y" || value == "yes" || input == confirmValue
 }
 
 func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.Cmd) {
@@ -377,6 +445,7 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 		cmd := exec.Command(action.Exec.Program, action.Exec.Args...)
 		cmd.Dir = m.cwd
 		m.running = true
+		m.runningTitle = action.Title
 		m.actionResult = nil
 		m.confirming = false
 		m.confirmInput = ""
@@ -393,6 +462,7 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 	}
 	if len(action.Exec.Batch) > 0 {
 		m.running = true
+		m.runningTitle = action.Title
 		m.actionResult = nil
 		m.confirming = false
 		m.confirmInput = ""
@@ -405,6 +475,7 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 	}
 	spec := runner.ExecSpec{Program: action.Exec.Program, Args: action.Exec.Args, Cwd: m.cwd}
 	m.running = true
+	m.runningTitle = action.Title
 	m.actionResult = nil
 	m.confirming = false
 	m.confirmInput = ""
@@ -481,6 +552,30 @@ func (m *appModel) toggleSelectedSkill() {
 	}
 }
 
+func (m *appModel) selectCurrentSourceGroup() {
+	items := m.filteredSkills()
+	if len(items) == 0 || m.selected >= len(items) {
+		return
+	}
+	currentGroup := sourceGroupKey(items[m.selected])
+	if currentGroup == "" {
+		return
+	}
+	if m.selectedKeys == nil {
+		m.selectedKeys = map[string]bool{}
+	}
+	changed := false
+	for _, skill := range items {
+		if sourceGroupKey(skill) == currentGroup {
+			m.selectedKeys[skillKey(skill)] = true
+			changed = true
+		}
+	}
+	if !changed && len(m.selectedKeys) == 0 {
+		m.selectedKeys = nil
+	}
+}
+
 func (m appModel) isSelected(skill *model.Skill) bool {
 	return len(m.selectedKeys) > 0 && m.selectedKeys[skillKey(skill)]
 }
@@ -507,6 +602,94 @@ func skillKey(skill *model.Skill) string {
 		return ""
 	}
 	return strings.Join([]string{string(skill.Scope), skill.Name, skill.CanonicalPath, skill.SkillPath}, "\x00")
+}
+
+func sourceGroupKey(skill *model.Skill) string {
+	info := sourceInfo(skill)
+	if info.Source == "" {
+		return ""
+	}
+	return info.Source
+}
+
+func sourceGroupLabel(skill *model.Skill) string {
+	info := sourceInfo(skill)
+	if info.Source == "" {
+		return ""
+	}
+	return info.Source
+}
+
+func listGroupLabel(skill *model.Skill) string {
+	if label := sourceGroupLabel(skill); label != "" {
+		return label
+	}
+	return "No source metadata"
+}
+
+type skillSourceInfo struct {
+	Source string
+	Folder string
+	Ref    string
+}
+
+func sourceInfo(skill *model.Skill) skillSourceInfo {
+	if skill == nil {
+		return skillSourceInfo{}
+	}
+	if skill.Scope == model.ScopeProject && skill.LocalLock != nil {
+		return localSourceInfo(skill.LocalLock)
+	}
+	if skill.Scope == model.ScopeGlobal && skill.GlobalLock != nil {
+		return globalSourceInfo(skill.GlobalLock)
+	}
+	if skill.LocalLock != nil {
+		return localSourceInfo(skill.LocalLock)
+	}
+	if skill.GlobalLock != nil {
+		return globalSourceInfo(skill.GlobalLock)
+	}
+	return skillSourceInfo{}
+}
+
+func localSourceInfo(lock *model.LocalLockEntry) skillSourceInfo {
+	if lock == nil {
+		return skillSourceInfo{}
+	}
+	return skillSourceInfo{Source: compat.SanitizeMetadata(lock.Source), Folder: skillFolder(lock.SkillPath), Ref: compat.SanitizeMetadata(lock.Ref)}
+}
+
+func globalSourceInfo(lock *model.GlobalLockEntry) skillSourceInfo {
+	if lock == nil {
+		return skillSourceInfo{}
+	}
+	source := lock.Source
+	if source == "" {
+		source = lock.SourceURL
+	}
+	return skillSourceInfo{Source: compat.SanitizeMetadata(source), Folder: skillFolder(lock.SkillPath), Ref: compat.SanitizeMetadata(lock.Ref)}
+}
+
+func skillFolder(skillPath string) string {
+	folder := compat.SanitizeMetadata(skillPath)
+	folder = strings.TrimSuffix(folder, "/SKILL.md")
+	folder = strings.TrimSuffix(folder, "SKILL.md")
+	return strings.Trim(folder, "/")
+}
+
+func sourceDetailLines(skill *model.Skill, width int) []string {
+	info := sourceInfo(skill)
+	if info.Source == "" {
+		return nil
+	}
+	lines := []string{wrapText("Source: "+info.Source, width)}
+	if info.Folder != "" {
+		lines = append(lines, wrapText("Folder: "+info.Folder, width))
+	}
+	if info.Ref != "" {
+		lines = append(lines, wrapText("Ref: "+info.Ref, width))
+	}
+	return lines
 }
 
 func (m *appModel) pruneSelected() {
@@ -553,7 +736,14 @@ func (m appModel) View() string {
 	list := listStyle.Render(fitLines(viewModel.listPane(layout.List.ContentHeight, layout.List.ContentWidth), layout.List.ContentHeight))
 	detail := detailStyle.Render(viewModel.detailPane())
 	footer := fitToScreen(viewModel.footer(), layout.Width, 1)
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, list, detail) + "\n" + footer
+	view := lipgloss.JoinHorizontal(lipgloss.Top, left, list, detail) + "\n" + footer
+	if viewModel.running {
+		return viewModel.runningOverlay(layout)
+	}
+	if viewModel.confirming {
+		return viewModel.confirmationOverlay(layout)
+	}
+	return view
 }
 
 func (m appModel) filterPane(width int) string {
@@ -590,7 +780,7 @@ func (m appModel) filterPane(width int) string {
 		lines = append(lines, "", "Search", prompt)
 	}
 	if m.help {
-		lines = append(lines, "", "Keys", "↑/↓ j/k select", "space mark", "tab scope", "a agent", "A all agents", "c actions", "enter run action", "/ search", "r refresh", "? help", "q quit")
+		lines = append(lines, "", "Keys", "↑/↓ j/k select", "space mark", "s source mark", "o open", "u update", "x remove", "tab scope", "a agent", "A all agents", "c actions", "/ search", "r refresh", "? help", "q quit")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -616,14 +806,16 @@ func (m appModel) listPane(height, width int) string {
 		return strings.Join(append(lines, "", dimStyle.Render(detail)), "\n")
 	}
 	visible := max(1, height-3)
-	start := 0
-	if m.selected >= visible {
-		start = m.selected - visible + 1
-	}
-	end := min(len(items), start+visible)
-	for i := start; i < end; i++ {
+	rows := []listRow{}
+	previousGroup := ""
+	selectedRow := 0
+	for i := 0; i < len(items); i++ {
 		skill := items[i]
 		view := display.Skill(skill)
+		if group := listGroupLabel(skill); group != previousGroup {
+			rows = append(rows, listRow{line: dimStyle.Render(truncate("─ "+group, width)), skillIndex: -1})
+			previousGroup = group
+		}
 		mark := "  "
 		if m.isSelected(skill) {
 			mark = "● "
@@ -635,15 +827,33 @@ func (m appModel) listPane(height, width int) string {
 		if len(view.HealthIssues) > 0 {
 			label += fmt.Sprintf(" ⚠ %d", len(view.HealthIssues))
 		}
+		var line string
 		if i == m.selected {
-			lines = append(lines, selectedStyle.Render(truncate(label, width)))
+			line = selectedStyle.Render(truncate(label, width))
 		} else if len(view.HealthIssues) > 0 {
-			lines = append(lines, errorStyle.Render(truncate(label, width)))
+			line = errorStyle.Render(truncate(label, width))
 		} else {
-			lines = append(lines, truncate(label, width))
+			line = truncate(label, width)
 		}
+		if i == m.selected {
+			selectedRow = len(rows)
+		}
+		rows = append(rows, listRow{line: line, skillIndex: i})
+	}
+	start := 0
+	if selectedRow >= visible {
+		start = selectedRow - visible + 1
+	}
+	end := min(len(rows), start+visible)
+	for _, row := range rows[start:end] {
+		lines = append(lines, row.line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+type listRow struct {
+	line       string
+	skillIndex int
 }
 
 func (m appModel) detailPane() string {
@@ -673,6 +883,9 @@ func (m appModel) detailLines(width int) []string {
 		"",
 		fmt.Sprintf("Scope: %s", view.Scope),
 		wrapText(fmt.Sprintf("Lock: %s", display.LockSummary(view)), width),
+	}
+	if sourceLines := sourceDetailLines(items[m.selected], width); len(sourceLines) > 0 {
+		lines = append(lines, sourceLines...)
 	}
 	if view.CanonicalPath != "" {
 		lines = append(lines, wrapText("Canonical: "+view.CanonicalPath, width))
@@ -754,21 +967,12 @@ func (m appModel) commandPreview(sk *model.Skill, width int) []string {
 		title = fmt.Sprintf(" Bulk actions · %d selected ", count)
 	}
 	lines := []string{actionTitleStyle.Render(title)}
-	lines = append(lines, dimStyle.Render("  j/k choose, enter run, c hide"))
+	lines = append(lines, dimStyle.Render("  j/k choose, enter run, o/u/x shortcuts, c hide"))
 	if m.running {
 		lines = append(lines, "", "  "+runningStyle.Render("Running action..."))
 	}
 	if m.confirming {
-		current := m.currentActions()
-		prompt := "type confirmation"
-		if len(current) > 0 && m.action < len(current) {
-			prompt = fmt.Sprintf("type %q to confirm", current[m.action].ConfirmValue)
-		}
-		lines = append(lines, "", "  "+errorStyle.Render("Confirm mutation"), "  "+prompt, "  "+dimStyle.Render("esc cancels"))
-		if m.confirmError != "" {
-			lines = append(lines, "  "+errorStyle.Render(m.confirmError))
-		}
-		lines = append(lines, "  > "+compat.SanitizeMetadata(m.confirmInput)+"_")
+		lines = append(lines, "", "  "+errorStyle.Render("Confirmation pending"))
 	}
 	if m.actionResult != nil {
 		lines = append(lines, "")
@@ -842,6 +1046,50 @@ func (m appModel) renderActionResult(width int) []string {
 	return lines
 }
 
+func (m appModel) confirmationOverlay(layout appLayout) string {
+	actions := m.currentActions()
+	title := "Confirm action"
+	phrase := ""
+	if len(actions) > 0 && m.action < len(actions) {
+		action := actions[m.action]
+		title = compat.SanitizeMetadata(action.Title)
+		phrase = compat.SanitizeMetadata(action.ConfirmValue)
+	}
+	lines := []string{
+		errorStyle.Bold(true).Render("Confirm"),
+		wrapText(title, 44),
+		"",
+		"Press Enter or y to confirm.",
+		"Type n or Esc to cancel.",
+	}
+	if phrase != "" {
+		lines = append(lines, dimStyle.Render("Also accepted: "+phrase))
+	}
+	if m.confirmError != "" {
+		lines = append(lines, "", errorStyle.Render(m.confirmError))
+	}
+	input := compat.SanitizeMetadata(m.confirmInput)
+	if input == "" {
+		input = dimStyle.Render("yes")
+	}
+	lines = append(lines, "", "> "+input+"_")
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(actionBorderColor).Padding(1, 2).Width(52).Render(strings.Join(lines, "\n"))
+	return fitToScreen(lipgloss.Place(layout.Width, layout.Height, lipgloss.Center, lipgloss.Center, box), layout.Width, layout.Height)
+}
+
+func (m appModel) runningOverlay(layout appLayout) string {
+	title := compat.SanitizeMetadata(firstNonEmpty(m.runningTitle, "Running action"))
+	lines := []string{
+		runningStyle.Render("Running"),
+		wrapText(title, 44),
+		"",
+		"Working…",
+		dimStyle.Render("Press q or Ctrl+C to quit LazySkills."),
+	}
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(actionBorderColor).Padding(1, 2).Width(52).Render(strings.Join(lines, "\n"))
+	return fitToScreen(lipgloss.Place(layout.Width, layout.Height, lipgloss.Center, lipgloss.Center, box), layout.Width, layout.Height)
+}
+
 func (m appModel) footer() string {
 	mode := ""
 	selection := ""
@@ -878,6 +1126,19 @@ func (m appModel) filteredSkills() []*model.Skill {
 		}
 		out = append(out, sk)
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		leftGroup := listGroupLabel(out[i])
+		rightGroup := listGroupLabel(out[j])
+		if leftGroup != rightGroup {
+			return leftGroup < rightGroup
+		}
+		left := strings.ToLower(display.Skill(out[i]).Name)
+		right := strings.ToLower(display.Skill(out[j]).Name)
+		if left != right {
+			return left < right
+		}
+		return string(out[i].Scope) < string(out[j].Scope)
+	})
 	return out
 }
 

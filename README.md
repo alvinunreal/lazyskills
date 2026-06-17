@@ -12,12 +12,14 @@ It is designed to complement the official `skills` CLI, not replace it.
 - Visibility reasons per agent, including missing links, broken symlinks, unsupported global installs, and ghost agent-directory skills
 - `SKILL.md` preview with safe terminal sanitization
 - Responsive panes and scrollable details
+- Source/repo group headers in the skill list
 - Guarded actions:
   - refresh/rescan
   - open selected skill in `$EDITOR`
   - reinstall/update selected skill through the official `skills` CLI
   - remove selected skill through the official `skills` CLI
   - bulk reinstall/update or remove marked skills
+- Source/repo-aware selection for grouped workflows
 - Structured command execution with confirmation, captured output, and rescan after successful mutations
 
 ## Install / build
@@ -52,6 +54,10 @@ Common TUI keys:
 | --- | --- |
 | `↑/↓`, `j/k` | Move selection |
 | `space` | Mark/unmark skill for bulk actions |
+| `s` | Mark all skills from the current source/repo |
+| `o` | Open current skill in `$EDITOR` |
+| `u` | Update current skill, or marked skills if any are selected |
+| `x` | Remove current skill, or marked skills if any are selected |
 | `tab`, `shift+tab`, `←/→` | Change project/global scope filter |
 | `a` | Cycle agent filter |
 | `A` | Reset agent filter to all agents |
@@ -62,7 +68,9 @@ Common TUI keys:
 | `?` | Toggle help |
 | `q` | Quit |
 
-Mutating actions require confirmation. Single remove requires typing the exact installed directory identity. Bulk actions require typing the displayed phrase, such as `update 2 skills` or `remove 2 skills`.
+Mutating actions open a centered confirmation prompt. Press Enter for the default yes, or type `y`, `yes`, or the displayed phrase. Press `n` or Esc to cancel.
+
+The skill list groups adjacent skills by source/repo when lock metadata is available. Skill details also show the exact folder and ref. Use `s` to mark every skill from the current source/repo, then `u` or `x` to update or remove that group with confirmation.
 
 ## How actions work
 
