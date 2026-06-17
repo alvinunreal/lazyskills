@@ -3,3 +3,4 @@
 # END oh-my-opencode-slim clonedeps
 
 .slim/deepwork/
+.codegraph/

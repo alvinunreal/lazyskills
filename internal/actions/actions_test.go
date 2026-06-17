@@ -39,6 +39,23 @@ func TestForSkillBuildsStructuredSanitizedCommandPreviews(t *testing.T) {
 	}
 }
 
+func TestBulkActionsBuildBatchCommands(t *testing.T) {
+	skills := []*model.Skill{
+		{Name: "One", Scope: model.ScopeProject, CanonicalPath: "/tmp/one", LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+		{Name: "Two", Scope: model.ScopeProject, CanonicalPath: "/tmp/two", LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+	}
+	previews := ForSkillsWithResolver(skills, func() (string, []string) { return "skills", nil })
+	if len(previews) != 2 {
+		t.Fatalf("expected update and remove bulk actions, got %#v", previews)
+	}
+	if previews[0].ConfirmValue != "update 2 skills" || len(previews[0].Exec.Batch) != 2 {
+		t.Fatalf("unexpected bulk update preview: %#v", previews[0])
+	}
+	if previews[1].ConfirmValue != "remove 2 skills" || !previews[1].Dangerous || len(previews[1].Exec.Batch) != 2 {
+		t.Fatalf("unexpected bulk remove preview: %#v", previews[1])
+	}
+}
+
 func TestOpenEditorActionUsesSafeEditorAndSkillPath(t *testing.T) {
 	t.Setenv("EDITOR", "vim -n")
 	previews := ForSkill(&model.Skill{Name: "Deploy", Scope: model.ScopeProject, SkillPath: "/tmp/deploy/SKILL.md"})

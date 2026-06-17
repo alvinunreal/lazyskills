@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,7 @@ type CommandPreview struct {
 type ExecSpec struct {
 	Program     string
 	Args        []string
+	Batch       []ExecSpec
 	Cwd         string
 	Interactive bool
 	Internal    string
@@ -38,6 +40,56 @@ type SkillsResolver func() (program string, baseArgs []string)
 
 func ForSkill(sk *model.Skill) []CommandPreview {
 	return ForSkillWithResolver(sk, ResolveSkillsCommand)
+}
+
+func ForSkills(skills []*model.Skill) []CommandPreview {
+	return ForSkillsWithResolver(skills, ResolveSkillsCommand)
+}
+
+func ForSkillsWithResolver(skills []*model.Skill, resolve SkillsResolver) []CommandPreview {
+	if len(skills) == 0 {
+		return nil
+	}
+	if resolve == nil {
+		resolve = ResolveSkillsCommand
+	}
+	count := len(skills)
+	updateBatch, updateOK, updateReason := bulkBatch(skills, resolve, "reinstall_update")
+	removeBatch, removeOK, removeReason := bulkBatch(skills, resolve, "remove")
+	previews := []CommandPreview{}
+	if updateOK {
+		previews = append(previews, newBatchPreview("bulk_reinstall_update", fmt.Sprintf("Reinstall/update %d selected skills", count), updateBatch, fmt.Sprintf("Run the official skills CLI update flow for %d selected skills.", count), fmt.Sprintf("update %d skills", count), false))
+	} else {
+		previews = append(previews, unavailablePreview(fmt.Sprintf("Reinstall/update %d selected skills", count), updateReason))
+	}
+	if removeOK {
+		previews = append(previews, newBatchPreview("bulk_remove", fmt.Sprintf("Remove %d selected skills", count), removeBatch, fmt.Sprintf("Remove %d selected installed skills via the official skills CLI.", count), fmt.Sprintf("remove %d skills", count), true))
+	} else {
+		previews = append(previews, unavailablePreview(fmt.Sprintf("Remove %d selected skills", count), removeReason))
+	}
+	return previews
+}
+
+func bulkBatch(skills []*model.Skill, resolve SkillsResolver, actionID string) ([]ExecSpec, bool, string) {
+	batch := make([]ExecSpec, 0, len(skills))
+	for _, skill := range skills {
+		found := false
+		for _, preview := range ForSkillWithResolver(skill, resolve) {
+			if preview.ID != actionID {
+				continue
+			}
+			if !preview.Available {
+				return nil, false, fmt.Sprintf("%s: %s", compat.SanitizeMetadata(skill.Name), preview.Reason)
+			}
+			batch = append(batch, preview.Exec)
+			found = true
+			break
+		}
+		if !found {
+			return nil, false, fmt.Sprintf("%s: action unavailable", compat.SanitizeMetadata(skill.Name))
+		}
+	}
+	return batch, true, ""
 }
 
 func ForSkillWithResolver(sk *model.Skill, resolve SkillsResolver) []CommandPreview {
@@ -133,6 +185,20 @@ func newPreview(id, title, program string, args []string, description string, mu
 	preview := CommandPreview{ID: id, Title: title, Program: program, Args: execArgs, Exec: ExecSpec{Program: program, Args: execArgs}, Description: description, Mutates: mutates, RequiresConfirm: confirm, Dangerous: dangerous, ConfirmValue: confirmValue, Available: true}
 	preview.Command = renderCommand(program, execArgs)
 	return preview
+}
+
+func newBatchPreview(id, title string, batch []ExecSpec, description, confirmValue string, dangerous bool) CommandPreview {
+	if len(batch) == 0 {
+		return unavailablePreview(title, "no executable commands")
+	}
+	commands := make([]string, 0, len(batch))
+	for _, spec := range batch {
+		if spec.Program == "" || len(spec.Args) == 0 || spec.Interactive || spec.Internal != "" {
+			return unavailablePreview(title, "bulk action contains unsupported command")
+		}
+		commands = append(commands, renderCommand(spec.Program, spec.Args))
+	}
+	return CommandPreview{ID: id, Title: title, Exec: ExecSpec{Batch: batch}, Command: strings.Join(commands, " && "), Description: description, Mutates: true, RequiresConfirm: true, Dangerous: dangerous, ConfirmValue: confirmValue, Available: true}
 }
 
 func unavailablePreview(title, reason string) CommandPreview {

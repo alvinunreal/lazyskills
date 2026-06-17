@@ -175,7 +175,7 @@ func TestAgentFilterListMarksNonVisibleSkills(t *testing.T) {
 		},
 	}}}
 	out := m.View()
-	if !strings.Contains(out, "Visible [project] ✓ visible") || !strings.Contains(out, "Missing [project] × missing_agent_l") {
+	if !strings.Contains(out, "Visible [project] ✓ visible") || !strings.Contains(out, "Missing [project] × missing_agent") {
 		t.Fatalf("expected list-level visibility badges, got %q", out)
 	}
 }
@@ -261,6 +261,132 @@ func TestActionExecUsesProjectCwdAndPreventsDuplicateWhileRunning(t *testing.T) 
 	}
 }
 
+func TestSpaceMarksSkillsAndEscClearsSelection(t *testing.T) {
+	m := bulkActionTestModel(t.TempDir())
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(appModel)
+	if m.selectedCount() != 1 || !strings.Contains(m.View(), "1 selected") || !strings.Contains(m.View(), "● One") {
+		t.Fatalf("expected one marked skill, count=%d view=%q", m.selectedCount(), m.View())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(appModel)
+	if m.selectedCount() != 0 {
+		t.Fatalf("expected esc to clear selection, got %d", m.selectedCount())
+	}
+}
+
+func TestEscClearsSelectionBeforeLeavingActionModeOrAgentFilter(t *testing.T) {
+	m := bulkActionTestModel(t.TempDir())
+	m.commands = true
+	m.agent = "opencode"
+	m.selectedKeys = map[string]bool{skillKey(m.result.Skills[0]): true}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	next := updated.(appModel)
+	if next.selectedCount() != 0 || !next.commands || next.agent != "opencode" {
+		t.Fatalf("expected esc to clear selection first, selected=%d commands=%v agent=%q", next.selectedCount(), next.commands, next.agent)
+	}
+}
+
+func TestBulkActionsRenderAndExecuteSequentially(t *testing.T) {
+	cwd := t.TempDir()
+	calls := 0
+	old := runExec
+	runExec = func(spec runner.ExecSpec) runner.Result {
+		calls++
+		return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
+	}
+	t.Cleanup(func() { runExec = old })
+
+	m := bulkActionTestModel(cwd)
+	m.selectedKeys = map[string]bool{}
+	for _, skill := range m.result.Skills {
+		m.selectedKeys[skillKey(skill)] = true
+	}
+	m.commands = true
+	out := m.View()
+	if !strings.Contains(out, "Bulk actions") || !strings.Contains(out, "Reinstall/update 2 selected skills") || strings.Contains(out, "Open selected skill") {
+		t.Fatalf("expected constrained bulk actions, got %q", out)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	for _, r := range []rune("update 2 skills") {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(appModel)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	if cmd == nil || !m.running {
+		t.Fatalf("expected bulk command to run")
+	}
+	updated, rescan := m.Update(cmd())
+	m = updated.(appModel)
+	if calls != 2 || m.selectedCount() != 0 || rescan == nil {
+		t.Fatalf("expected two commands, cleared selection, and rescan; calls=%d selected=%d rescan=%v", calls, m.selectedCount(), rescan)
+	}
+}
+
+func TestBulkActionStopsOnFirstFailure(t *testing.T) {
+	cwd := t.TempDir()
+	calls := 0
+	old := runExec
+	runExec = func(spec runner.ExecSpec) runner.Result {
+		calls++
+		if calls == 1 {
+			return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 2, Stderr: "nope"}
+		}
+		return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
+	}
+	t.Cleanup(func() { runExec = old })
+	m := bulkActionTestModel(cwd)
+	m.selectedKeys = map[string]bool{}
+	for _, skill := range m.result.Skills {
+		m.selectedKeys[skillKey(skill)] = true
+	}
+	result, partialSuccess := m.runBatch(m.currentActions()[0].Exec.Batch)
+	if calls != 1 || result.ExitCode != 2 {
+		t.Fatalf("expected stop on first failure, calls=%d result=%#v", calls, result)
+	}
+	if partialSuccess {
+		t.Fatalf("first-command failure should not count as partial success")
+	}
+}
+
+func TestBulkPartialFailureRescansAndKeepsSelection(t *testing.T) {
+	cwd := t.TempDir()
+	calls := 0
+	old := runExec
+	runExec = func(spec runner.ExecSpec) runner.Result {
+		calls++
+		if calls == 2 {
+			return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 2, Stderr: "nope"}
+		}
+		return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
+	}
+	t.Cleanup(func() { runExec = old })
+	m := bulkActionTestModel(cwd)
+	m.selectedKeys = map[string]bool{}
+	for _, skill := range m.result.Skills {
+		m.selectedKeys[skillKey(skill)] = true
+	}
+	m.commands = true
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	for _, r := range []rune("update 2 skills") {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(appModel)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	if cmd == nil {
+		t.Fatalf("expected bulk command")
+	}
+	updated, rescan := m.Update(cmd())
+	m = updated.(appModel)
+	if calls != 2 || rescan == nil || m.selectedCount() != 2 || m.actionResult == nil || m.actionResult.ExitCode != 2 {
+		t.Fatalf("expected partial failure to rescan and keep selection; calls=%d rescan=%v selected=%d result=%#v", calls, rescan, m.selectedCount(), m.actionResult)
+	}
+}
+
 func TestFailedMutationDoesNotTriggerRescan(t *testing.T) {
 	cwd := t.TempDir()
 	old := runExec
@@ -316,6 +442,13 @@ func actionTestModel(cwd string) appModel {
 		CanonicalPath: "/tmp/deploy-skill",
 		LocalLock:     &model.LocalLockEntry{Source: "owner/repo"},
 	}}}}
+}
+
+func bulkActionTestModel(cwd string) appModel {
+	return appModel{cwd: cwd, width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{
+		{Name: "One", Description: "desc", Scope: model.ScopeProject, CanonicalPath: "/tmp/one", LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+		{Name: "Two", Description: "desc", Scope: model.ScopeProject, CanonicalPath: "/tmp/two", LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+	}}}
 }
 
 func actionIndex(t *testing.T, m appModel, title string) int {

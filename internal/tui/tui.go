@@ -38,6 +38,7 @@ type appModel struct {
 	search       string
 	searching    bool
 	commands     bool
+	selectedKeys map[string]bool
 	help         bool
 	action       int
 	confirming   bool
@@ -97,8 +98,9 @@ type snapshotMsg struct {
 }
 
 type actionResultMsg struct {
-	result  runner.Result
-	mutates bool
+	result         runner.Result
+	mutates        bool
+	partialSuccess bool
 }
 
 func Run(cwd string) error {
@@ -132,6 +134,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.result = msg.result
 		m.err = msg.err
 		m.clampSelection()
+		m.pruneSelected()
 		m.actionResult = nil
 		m.syncViewport()
 	case actionResultMsg:
@@ -139,8 +142,12 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.confirming = false
 		m.confirmInput = ""
 		m.actionResult = &msg.result
+		succeeded := msg.result.ExitCode == 0 && msg.result.Err == ""
+		if msg.mutates && succeeded {
+			m.selectedKeys = nil
+		}
 		m.syncViewport()
-		if msg.mutates && msg.result.ExitCode == 0 && msg.result.Err == "" {
+		if msg.mutates && (succeeded || msg.partialSuccess) {
 			return m, loadSnapshot(m.cwd)
 		}
 	case tea.KeyMsg:
@@ -211,7 +218,11 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch key {
 		case "esc":
-			if m.commands {
+			if m.selectedCount() > 0 {
+				m.selectedKeys = nil
+				m.action = 0
+				m.actionResult = nil
+			} else if m.commands {
 				m.commands = false
 			} else if m.agent != "" {
 				m.agent = ""
@@ -227,6 +238,10 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "c":
 			m.commands = !m.commands
 			m.action = 0
+		case " ":
+			m.toggleSelectedSkill()
+			m.action = 0
+			m.actionResult = nil
 		case "/":
 			m.searching = true
 		case "enter":
@@ -307,6 +322,10 @@ func (m *appModel) clampAction() {
 }
 
 func (m appModel) currentActions() []actions.CommandPreview {
+	selected := m.selectedSkills()
+	if len(selected) > 0 {
+		return actions.ForSkills(selected)
+	}
 	items := m.filteredSkills()
 	if len(items) == 0 || m.selected >= len(items) {
 		return nil
@@ -372,6 +391,18 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 			return actionResultMsg{result: result, mutates: action.Mutates}
 		})
 	}
+	if len(action.Exec.Batch) > 0 {
+		m.running = true
+		m.actionResult = nil
+		m.confirming = false
+		m.confirmInput = ""
+		m.confirmError = ""
+		m.syncViewport()
+		return m, func() tea.Msg {
+			result, partialSuccess := m.runBatch(action.Exec.Batch)
+			return actionResultMsg{result: result, mutates: action.Mutates, partialSuccess: partialSuccess}
+		}
+	}
 	spec := runner.ExecSpec{Program: action.Exec.Program, Args: action.Exec.Args, Cwd: m.cwd}
 	m.running = true
 	m.actionResult = nil
@@ -383,6 +414,23 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 		result := runExec(spec)
 		return actionResultMsg{result: result, mutates: action.Mutates}
 	}
+}
+
+func (m appModel) runBatch(batch []actions.ExecSpec) (runner.Result, bool) {
+	lines := []string{}
+	succeeded := 0
+	for i, spec := range batch {
+		runSpec := runner.ExecSpec{Program: spec.Program, Args: spec.Args, Cwd: m.cwd}
+		result := runExec(runSpec)
+		prefix := fmt.Sprintf("%d/%d %s", i+1, len(batch), compat.SanitizeMetadata(spec.Program))
+		if result.ExitCode != 0 || result.Err != "" {
+			result.Stdout = strings.Join(append(lines, prefix+" failed"), "\n")
+			return result, succeeded > 0
+		}
+		succeeded++
+		lines = append(lines, prefix+" ok")
+	}
+	return runner.Result{Program: "bulk", Cwd: m.cwd, ExitCode: 0, Stdout: strings.Join(lines, "\n")}, false
 }
 
 func (m *appModel) syncViewport() {
@@ -411,6 +459,71 @@ func (m *appModel) clampSelection() {
 	}
 	if m.selected >= len(items) {
 		m.selected = len(items) - 1
+	}
+}
+
+func (m *appModel) toggleSelectedSkill() {
+	items := m.filteredSkills()
+	if len(items) == 0 || m.selected >= len(items) {
+		return
+	}
+	if m.selectedKeys == nil {
+		m.selectedKeys = map[string]bool{}
+	}
+	key := skillKey(items[m.selected])
+	if m.selectedKeys[key] {
+		delete(m.selectedKeys, key)
+	} else {
+		m.selectedKeys[key] = true
+	}
+	if len(m.selectedKeys) == 0 {
+		m.selectedKeys = nil
+	}
+}
+
+func (m appModel) isSelected(skill *model.Skill) bool {
+	return len(m.selectedKeys) > 0 && m.selectedKeys[skillKey(skill)]
+}
+
+func (m appModel) selectedCount() int {
+	return len(m.selectedKeys)
+}
+
+func (m appModel) selectedSkills() []*model.Skill {
+	if len(m.selectedKeys) == 0 {
+		return nil
+	}
+	selected := make([]*model.Skill, 0, len(m.selectedKeys))
+	for _, skill := range m.result.Skills {
+		if m.isSelected(skill) {
+			selected = append(selected, skill)
+		}
+	}
+	return selected
+}
+
+func skillKey(skill *model.Skill) string {
+	if skill == nil {
+		return ""
+	}
+	return strings.Join([]string{string(skill.Scope), skill.Name, skill.CanonicalPath, skill.SkillPath}, "\x00")
+}
+
+func (m *appModel) pruneSelected() {
+	if len(m.selectedKeys) == 0 {
+		return
+	}
+	valid := map[string]bool{}
+	for _, skill := range m.result.Skills {
+		valid[skillKey(skill)] = true
+	}
+	for key := range m.selectedKeys {
+		if !valid[key] {
+			delete(m.selectedKeys, key)
+		}
+	}
+	if len(m.selectedKeys) == 0 {
+		m.selectedKeys = nil
 	}
 }
 
@@ -477,7 +590,7 @@ func (m appModel) filterPane(width int) string {
 		lines = append(lines, "", "Search", prompt)
 	}
 	if m.help {
-		lines = append(lines, "", "Keys", "↑/↓ j/k select", "tab scope", "a agent", "A all agents", "c actions", "enter run action", "/ search", "r refresh", "? help", "q quit")
+		lines = append(lines, "", "Keys", "↑/↓ j/k select", "space mark", "tab scope", "a agent", "A all agents", "c actions", "enter run action", "/ search", "r refresh", "? help", "q quit")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -509,8 +622,13 @@ func (m appModel) listPane(height, width int) string {
 	}
 	end := min(len(items), start+visible)
 	for i := start; i < end; i++ {
-		view := display.Skill(items[i])
-		label := fmt.Sprintf("%s [%s]", view.Name, view.Scope)
+		skill := items[i]
+		view := display.Skill(skill)
+		mark := "  "
+		if m.isSelected(skill) {
+			mark = "● "
+		}
+		label := fmt.Sprintf("%s%s [%s]", mark, view.Name, view.Scope)
 		if m.agent != "" {
 			label += " " + agentVisibilityBadge(items[i], m.agent)
 		}
@@ -539,7 +657,14 @@ func (m appModel) detailText(width int) string {
 func (m appModel) detailLines(width int) []string {
 	items := m.filteredSkills()
 	if len(items) == 0 {
-		return []string{titleStyle.Render("Details"), "", dimStyle.Render("Select a skill to inspect it.")}
+		lines := []string{titleStyle.Render("Details"), "", dimStyle.Render("Select a skill to inspect it.")}
+		if m.commands && m.selectedCount() > 0 {
+			lines = append(lines, "")
+			divider := lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Render(strings.Repeat("─", max(1, width)))
+			lines = append(lines, divider)
+			lines = append(lines, m.commandPreview(nil, max(1, width-4))...)
+		}
+		return lines
 	}
 	view := display.Skill(items[m.selected])
 	lines := []string{
@@ -624,7 +749,11 @@ func (m appModel) visibilitySummary(view display.SkillView) []string {
 }
 
 func (m appModel) commandPreview(sk *model.Skill, width int) []string {
-	lines := []string{actionTitleStyle.Render(" Actions ")}
+	title := " Actions "
+	if count := m.selectedCount(); count > 0 {
+		title = fmt.Sprintf(" Bulk actions · %d selected ", count)
+	}
+	lines := []string{actionTitleStyle.Render(title)}
 	lines = append(lines, dimStyle.Render("  j/k choose, enter run, c hide"))
 	if m.running {
 		lines = append(lines, "", "  "+runningStyle.Render("Running action..."))
@@ -715,12 +844,16 @@ func (m appModel) renderActionResult(width int) []string {
 
 func (m appModel) footer() string {
 	mode := ""
+	selection := ""
+	if count := m.selectedCount(); count > 0 {
+		selection = fmt.Sprintf(" %s", lipgloss.NewStyle().Foreground(lipgloss.Color("117")).Bold(true).Render(fmt.Sprintf("%d selected", count))) + " : space toggle, esc clear"
+	}
 	if m.searching {
 		mode = " " + lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true).Render("SEARCH MODE") + " : type to filter, esc/enter to leave"
 	} else if m.commands {
 		mode = " " + lipgloss.NewStyle().Foreground(lipgloss.Color("117")).Bold(true).Render("ACTION MODE") + " : j/k choose, enter run, c hide"
 	}
-	return dimStyle.Render("LazySkills "+appVersion) + mode
+	return dimStyle.Render("LazySkills "+appVersion) + selection + mode
 }
 
 func (m appModel) filteredSkills() []*model.Skill {

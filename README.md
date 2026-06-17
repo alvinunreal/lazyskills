@@ -17,6 +17,7 @@ It is designed to complement the official `skills` CLI, not replace it.
   - open selected skill in `$EDITOR`
   - reinstall/update selected skill through the official `skills` CLI
   - remove selected skill through the official `skills` CLI
+  - bulk reinstall/update or remove marked skills
 - Structured command execution with confirmation, captured output, and rescan after successful mutations
 
 ## Install / build
@@ -50,8 +51,10 @@ Common TUI keys:
 | Key | Action |
 | --- | --- |
 | `↑/↓`, `j/k` | Move selection |
+| `space` | Mark/unmark skill for bulk actions |
 | `tab`, `shift+tab`, `←/→` | Change project/global scope filter |
 | `a` | Cycle agent filter |
+| `A` | Reset agent filter to all agents |
 | `/` | Search skills |
 | `c` | Show guarded actions |
 | `enter` | Run selected action when actions are visible |
@@ -59,7 +62,7 @@ Common TUI keys:
 | `?` | Toggle help |
 | `q` | Quit |
 
-Mutating actions require confirmation. Remove requires typing the exact installed directory identity.
+Mutating actions require confirmation. Single remove requires typing the exact installed directory identity. Bulk actions require typing the displayed phrase, such as `update 2 skills` or `remove 2 skills`.
 
 ## How actions work
 
@@ -79,7 +82,6 @@ The registry is manually ported for now. A generated parity check is a planned f
 ## Safety and limitations
 
 - LazySkills does not reimplement remote clone/install/update/remove logic in Go.
-- Bulk mutations are not implemented.
 - Search/marketplace flows are not implemented.
 - `skills use` integration is not implemented.
 - Agent cycling is functional but not yet a searchable picker.
