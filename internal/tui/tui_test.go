@@ -214,7 +214,7 @@ func TestTopLevelScanHealthIsRenderedSanitized(t *testing.T) {
 }
 
 func TestCommandPreviewModeRendersWithoutExecuting(t *testing.T) {
-	m := appModel{width: 120, height: 40, commands: true, result: model.ScanResult{Skills: []*model.Skill{{
+	m := appModel{width: 120, height: 40, selected: 1, commands: true, result: model.ScanResult{Skills: []*model.Skill{{
 		Name:      "Deploy Skill",
 		Scope:     model.ScopeProject,
 		LocalLock: &model.LocalLockEntry{Source: "owner/repo"},
@@ -229,7 +229,7 @@ func TestCommandPreviewModeRendersWithoutExecuting(t *testing.T) {
 }
 
 func TestActiveAgentVisibilityReasonIsRendered(t *testing.T) {
-	m := appModel{width: 120, height: 32, agent: "claude-code", result: model.ScanResult{Skills: []*model.Skill{{
+	m := appModel{width: 120, height: 32, selected: 1, agent: "claude-code", result: model.ScanResult{Skills: []*model.Skill{{
 		Name:          "Build",
 		Description:   "desc",
 		Scope:         model.ScopeProject,
@@ -285,9 +285,7 @@ func TestListRendersIssueRowsWithSeverityBadges(t *testing.T) {
 }
 
 func TestDetailRendersWarningOnlyIssuesAsWarnings(t *testing.T) {
-	m := appModel{result: model.ScanResult{Skills: []*model.Skill{
-		{Name: "Custom", Scope: model.ScopeGlobal, HealthIssues: []model.HealthIssue{{Type: "ghost_agent_skill", Severity: "warning", Message: "agent-specific skill"}}},
-	}}}
+	m := appModel{selected: 1, result: model.ScanResult{Skills: []*model.Skill{{Name: "Custom", Scope: model.ScopeGlobal, HealthIssues: []model.HealthIssue{{Type: "ghost_agent_skill", Severity: "warning", Message: "agent-specific skill"}}}}}}
 	out := m.detailText(80)
 	if !strings.Contains(out, "Warnings") || strings.Contains(out, "Health Issues") {
 		t.Fatalf("expected warning-only detail section, got %q", out)
@@ -445,8 +443,10 @@ func TestActionExecUsesProjectCwdAndPreventsDuplicateWhileRunning(t *testing.T) 
 
 func TestSpaceMarksSkillsAndEscClearsSelection(t *testing.T) {
 	m := bulkActionTestModel(t.TempDir())
+	fmt.Printf("BEFORE: selected=%d visibleRows=%+v\n", m.selected, m.visibleRows())
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
 	m = updated.(appModel)
+	fmt.Printf("AFTER: selected=%d visibleRows=%+v\n", m.selected, m.visibleRows())
 	if m.selectedCount() != 1 || !strings.Contains(m.View(), "● One") {
 		t.Fatalf("expected one marked skill, count=%d view=%q", m.selectedCount(), m.View())
 	}
@@ -652,7 +652,7 @@ func TestSourceMarkOnlySelectsFilteredSkills(t *testing.T) {
 }
 
 func TestSourceAndFolderDetailsRender(t *testing.T) {
-	m := appModel{width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{{
+	m := appModel{width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{{
 		Name: "One", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo", SkillPath: "skills/web/SKILL.md", Ref: "main"},
 	}}}}
 	out := m.View()
@@ -664,7 +664,7 @@ func TestSourceAndFolderDetailsRender(t *testing.T) {
 }
 
 func TestSkillListShowsSourceGroups(t *testing.T) {
-	m := appModel{width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{
+	m := appModel{width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{
 		{Name: "One", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo", SkillPath: "skills/web/SKILL.md"}},
 		{Name: "Two", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo", SkillPath: "skills/web/SKILL.md"}},
 		{Name: "Other", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo", SkillPath: "skills/data/SKILL.md"}},
@@ -673,18 +673,18 @@ func TestSkillListShowsSourceGroups(t *testing.T) {
 	if !strings.Contains(out, "owner/repo") {
 		t.Fatalf("expected source group header, got %q", out)
 	}
-	if strings.Count(out, "─ owner/repo") != 1 || strings.Contains(out, "owner/repo / skills/web") || strings.Contains(out, "owner/repo / skills/data") {
-		t.Fatalf("expected one repo-level group header, got %q", out)
+	if strings.Count(out, "owner/repo") != 3 || strings.Contains(out, "owner/repo / skills/web") || strings.Contains(out, "owner/repo / skills/data") {
+		t.Fatalf("expected repo-level group header (one in list, two in details), got %q", out)
 	}
 }
 
 func TestSkillListSeparatesNoSourceMetadata(t *testing.T) {
-	m := appModel{width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{
+	m := appModel{width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{
 		{Name: "Tracked", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
 		{Name: "Manual", Scope: model.ScopeProject},
 	}}}
 	out := m.View()
-	if !strings.Contains(out, "─ owner/repo") || !strings.Contains(out, "─ Custom / untracked") {
+	if !strings.Contains(out, "owner/repo") || !strings.Contains(out, "Custom / untracked") {
 		t.Fatalf("expected explicit source and no-source groups, got %q", out)
 	}
 }
@@ -699,7 +699,7 @@ func TestBracketJumpSourceGroupsWithoutChangingScope(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
 	next := updated.(appModel)
-	if next.filter != scopeAll || next.selected != 2 {
+	if next.filter != scopeAll || next.selected != 3 {
 		t.Fatalf("expected ] to jump to next source group without changing scope, filter=%d selected=%d", next.filter, next.selected)
 	}
 
@@ -813,7 +813,7 @@ func TestFocusControls(t *testing.T) {
 }
 
 func TestEnterSkillModal(t *testing.T) {
-	m := appModel{width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{
+	m := appModel{width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{
 		{Name: "One", Scope: model.ScopeProject},
 	}}}
 
@@ -847,7 +847,7 @@ func TestGroupedListKeepsSelectedRowVisible(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		skills = append(skills, &model.Skill{Name: fmt.Sprintf("Skill %02d", i), Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: fmt.Sprintf("owner/repo-%02d", i)}})
 	}
-	m := appModel{width: 120, height: 10, selected: 11, result: model.ScanResult{Skills: skills}}
+	m := appModel{width: 120, height: 10, selected: 23, result: model.ScanResult{Skills: skills}}
 	out := m.View()
 	if !strings.Contains(out, "Skill 11 [P]") {
 		t.Fatalf("expected selected row visible with many group headers, got %q", out)
@@ -902,7 +902,7 @@ func TestRemoveRequiresExactTypedIdentity(t *testing.T) {
 }
 
 func actionTestModel(cwd string) appModel {
-	return appModel{cwd: cwd, width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{{
+	return appModel{cwd: cwd, width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{{
 		Name:          "Deploy Skill",
 		Description:   "desc",
 		Scope:         model.ScopeProject,
@@ -912,7 +912,7 @@ func actionTestModel(cwd string) appModel {
 }
 
 func bulkActionTestModel(cwd string) appModel {
-	return appModel{cwd: cwd, width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{
+	return appModel{cwd: cwd, width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{
 		{Name: "One", Description: "desc", Scope: model.ScopeProject, CanonicalPath: "/tmp/one", LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
 		{Name: "Two", Description: "desc", Scope: model.ScopeProject, CanonicalPath: "/tmp/two", LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
 	}}}
@@ -985,7 +985,7 @@ func TestDetailPaneClipsLongPreview(t *testing.T) {
 
 func TestDetailScrollKeysMoveViewport(t *testing.T) {
 	preview := strings.Repeat("line\n", 80)
-	m := appModel{width: 100, height: 20, result: model.ScanResult{Skills: []*model.Skill{{Name: "Long", Description: "desc", Scope: model.ScopeProject, Preview: preview}}}}
+	m := appModel{width: 100, height: 20, selected: 1, result: model.ScanResult{Skills: []*model.Skill{{Name: "Long", Description: "desc", Scope: model.ScopeProject, Preview: preview}}}}
 	m.syncViewport()
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	next := updated.(appModel)
@@ -1014,7 +1014,7 @@ func TestThreePaneLayoutFocusAndScroll(t *testing.T) {
 	// In Skills focus, h/l or left/right jump source groups instead of changing focus.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
 	m = updated.(appModel)
-	if m.focus != focusSkills || m.selected != 1 {
+	if m.focus != focusSkills || m.selected != 2 {
 		t.Fatalf("expected right in skills focus to jump source group, got focus %v selection %d", m.focus, m.selected)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
@@ -1092,6 +1092,7 @@ func TestThreePaneLayoutFocusAndScroll(t *testing.T) {
 	}
 
 	// Enter opens modal
+	m.selected = 1
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(appModel)
 	if !m.detailModal {
@@ -1214,7 +1215,7 @@ func TestVisibilityReasonTranslation(t *testing.T) {
 }
 
 func TestStaticUpdateAwarenessDisclaimers(t *testing.T) {
-	m := appModel{width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{{
+	m := appModel{width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{{
 		Name: "One", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo", ComputedHash: "abcdef123456"},
 	}}}}
 	out := m.View()
@@ -1334,5 +1335,132 @@ func TestContextualFooterAndHelpModal(t *testing.T) {
 	m = updated.(appModel)
 	if m.helpOpen {
 		t.Fatal("expected q to close help modal")
+	}
+}
+
+func TestSelectedSkillActionsDoNotIncludeAppActions(t *testing.T) {
+	m := appModel{selected: 1, result: model.ScanResult{Skills: []*model.Skill{{Name: "Build", Scope: model.ScopeProject}}}}
+	previews := m.currentActions()
+	for _, preview := range previews {
+		if preview.ID == "skills_init" || preview.ID == "skills_find" || preview.ID == "skills_update" {
+			t.Fatalf("selected-skill actions should not include app-level action %q", preview.ID)
+		}
+	}
+}
+
+func TestCollapseExpandSourceGroups(t *testing.T) {
+	m := appModel{
+		width:           120,
+		height:          32,
+		focus:           focusSkills,
+		collapsedGroups: make(map[string]bool),
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{Name: "One", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/one"}},
+				{Name: "Two", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/one"}},
+				{Name: "Three", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/two"}},
+			},
+		},
+	}
+	m.syncViewport()
+
+	// Initially, both are expanded
+	out1 := m.View()
+	if !strings.Contains(out1, "- owner/one") || !strings.Contains(out1, "One") || !strings.Contains(out1, "Two") {
+		t.Fatalf("expected expanded groups (with ASCII minus) and skills, got:\n%s", out1)
+	}
+
+	// Selection starts at 0 (header row of owner/one)
+	if m.selected != 0 {
+		t.Fatalf("expected selection to start at header row 0, got %d", m.selected)
+	}
+
+	// Press h to collapse "owner/one"
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = updated.(appModel)
+	if !m.isCollapsed("owner/one") {
+		t.Fatal("expected owner/one to be collapsed")
+	}
+
+	// Selection should remain on index 0 (collapsed header)
+	if m.selected != 0 {
+		t.Fatalf("expected selection to remain on collapsed header row 0, got %d", m.selected)
+	}
+
+	// View should show + and hide "One" and "Two"
+	out2 := m.View()
+	if !strings.Contains(out2, "+ owner/one") || strings.Contains(out2, "  One [P]") || strings.Contains(out2, "  Two [P]") {
+		t.Fatalf("expected collapsed group A (with ASCII plus) to hide child skills, got:\n%s", out2)
+	}
+
+	// Press l to expand "owner/one" again
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	m = updated.(appModel)
+	if m.isCollapsed("owner/one") {
+		t.Fatal("expected owner/one to be expanded")
+	}
+
+	out3 := m.View()
+	if !strings.Contains(out3, "- owner/one") || !strings.Contains(out3, "One") {
+		t.Fatalf("expected expanded group A to show child skills, got:\n%s", out3)
+	}
+
+	// Test j/k navigation skips collapsed rows
+	// Collapse "owner/one" again
+	m.collapsedGroups["owner/one"] = true
+	m.clampSelection() // selection should clamp to 0 (header) or 1 (owner/two) or 2 (Three)
+
+	// Since owner/one is collapsed, visible rows are:
+	// index 0: + owner/one
+	// index 1: - owner/two
+	// index 2: Three
+	m.selected = 2 // on Three
+
+	// Pressing up/k from Three (index 2) should go to owner/two (index 1)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = updated.(appModel)
+	if m.selected != 1 {
+		t.Fatalf("expected selection to go to index 1 (owner/two), got %d", m.selected)
+	}
+
+	// Test h/l outside focusSkills do not collapse groups and do not change focus
+	m.focus = focusMetadata
+	m.collapsedGroups = make(map[string]bool)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = updated.(appModel)
+	if len(m.collapsedGroups) > 0 {
+		t.Fatalf("h outside focusSkills should not collapse groups")
+	}
+	if m.focus != focusMetadata {
+		t.Fatalf("h outside focusSkills should not change focus")
+	}
+
+	// Test group header row action details and commands
+	m.focus = focusSkills
+	m.selected = 0 // select header row owner/one
+	m.collapsedGroups["owner/one"] = true
+	outHeader := m.View()
+	if !strings.Contains(outHeader, "State:       collapsed") || !strings.Contains(outHeader, "Source-level actions coming later.") {
+		t.Fatalf("expected header placeholder in Metadata pane, got:\n%s", outHeader)
+	}
+
+	// Verify that header row selection has no skill-scoped actions
+	previewsHeader := m.currentActions()
+	for _, p := range previewsHeader {
+		if p.ID == "reinstall_update" || p.ID == "remove" {
+			t.Fatalf("header row actions should not include skill-scoped action %q", p.ID)
+		}
+	}
+
+	// Test enter on header row toggles expand/collapse
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	if m.isCollapsed("owner/one") {
+		t.Fatal("expected enter on collapsed header to expand it")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	if !m.isCollapsed("owner/one") {
+		t.Fatal("expected enter on expanded header to collapse it")
 	}
 }

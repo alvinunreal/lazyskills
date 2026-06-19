@@ -64,6 +64,7 @@ type appModel struct {
 	detailModal      bool
 	helpOpen         bool
 	focus            focusState
+	collapsedGroups  map[string]bool
 }
 
 type paneLayout struct {
@@ -141,6 +142,7 @@ func newModel(cwd string) appModel {
 		viewport:         viewport.New(0, 0),
 		metadataViewport: viewport.New(0, 0),
 		previewViewport:  viewport.New(0, 0),
+		collapsedGroups:  make(map[string]bool),
 	}
 }
 
@@ -366,19 +368,37 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.action = 0
 			m.actionResult = nil
 		case "enter":
-			items := m.filteredSkills()
-			if len(items) > 0 && m.selected < len(items) {
-				m.detailModal = true
-				m.detailsFocused = true
-				m.viewport.GotoTop()
-				m.syncViewport()
+			rows := m.visibleRows()
+			if len(rows) > 0 && m.selected < len(rows) {
+				row := rows[m.selected]
+				if row.isHeader {
+					if m.isCollapsed(row.groupName) {
+						m.expandGroup(row.groupName)
+					} else {
+						m.collapseGroup(row.groupName)
+					}
+				} else {
+					m.detailModal = true
+					m.detailsFocused = true
+					m.viewport.GotoTop()
+					m.syncViewport()
+				}
 			}
 		case "o":
-			return m.startCurrentSkillActionByID("open_skill")
+			rows := m.visibleRows()
+			if len(rows) > 0 && m.selected < len(rows) && !rows[m.selected].isHeader {
+				return m.startCurrentSkillActionByID("open_skill")
+			}
 		case "u":
-			return m.startActionByID(preferredUpdateActionID(m.selectedCount()))
+			rows := m.visibleRows()
+			if len(rows) > 0 && m.selected < len(rows) && !rows[m.selected].isHeader {
+				return m.startActionByID(preferredUpdateActionID(m.selectedCount()))
+			}
 		case "x":
-			return m.startActionByID(preferredRemoveActionID(m.selectedCount()))
+			rows := m.visibleRows()
+			if len(rows) > 0 && m.selected < len(rows) && !rows[m.selected].isHeader {
+				return m.startActionByID(preferredRemoveActionID(m.selectedCount()))
+			}
 		case "/":
 			m.searching = true
 		case "r":
@@ -440,13 +460,21 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.jumpSourceGroup(-1)
 		case "]":
 			m.jumpSourceGroup(1)
-		case "l":
+		case "l", "+":
 			if m.focus == focusSkills {
-				m.jumpSourceGroup(1)
+				rows := m.visibleRows()
+				if len(rows) > 0 && m.selected < len(rows) {
+					row := rows[m.selected]
+					m.expandGroup(row.groupName)
+				}
 			}
-		case "h":
+		case "h", "-":
 			if m.focus == focusSkills {
-				m.jumpSourceGroup(-1)
+				rows := m.visibleRows()
+				if len(rows) > 0 && m.selected < len(rows) {
+					row := rows[m.selected]
+					m.collapseGroup(row.groupName)
+				}
 			}
 		case "right":
 			if m.focus == focusSkills {
@@ -470,10 +498,13 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.previewViewport.LineDown(1)
 				m.clampViewportOffset()
 			} else {
-				m.selected++
-				m.actionResult = nil
-				m.metadataViewport.GotoTop()
-				m.previewViewport.GotoTop()
+				rows := m.visibleRows()
+				if m.selected < len(rows)-1 {
+					m.selected++
+					m.actionResult = nil
+					m.metadataViewport.GotoTop()
+					m.previewViewport.GotoTop()
+				}
 			}
 		case "up", "k":
 			if m.focus == focusMetadata {
@@ -483,10 +514,12 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.previewViewport.LineUp(1)
 				m.clampViewportOffset()
 			} else {
-				m.selected--
-				m.actionResult = nil
-				m.metadataViewport.GotoTop()
-				m.previewViewport.GotoTop()
+				if m.selected > 0 {
+					m.selected--
+					m.actionResult = nil
+					m.metadataViewport.GotoTop()
+					m.previewViewport.GotoTop()
+				}
 			}
 		case "pgdown", "ctrl+d":
 			var cmd tea.Cmd
@@ -543,11 +576,15 @@ func (m appModel) currentActions() []actions.CommandPreview {
 	if len(selected) > 0 {
 		return actions.ForSkills(selected)
 	}
-	items := m.filteredSkills()
-	if len(items) == 0 || m.selected >= len(items) {
+	rows := m.visibleRows()
+	if len(rows) == 0 || m.selected < 0 || m.selected >= len(rows) {
 		return actions.AppLevelActions()
 	}
-	return append(actions.ForSkill(items[m.selected]), actions.AppLevelActions()...)
+	row := rows[m.selected]
+	if row.isHeader {
+		return actions.AppLevelActions()
+	}
+	return actions.ForSkill(row.skill)
 }
 
 func (m appModel) startAction() (tea.Model, tea.Cmd) {
@@ -585,11 +622,15 @@ func (m appModel) startActionByID(id string) (tea.Model, tea.Cmd) {
 }
 
 func (m appModel) startCurrentSkillActionByID(id string) (tea.Model, tea.Cmd) {
-	items := m.filteredSkills()
-	if len(items) == 0 || m.selected >= len(items) {
+	rows := m.visibleRows()
+	if len(rows) == 0 || m.selected < 0 || m.selected >= len(rows) {
 		return m, nil
 	}
-	for _, action := range actions.ForSkill(items[m.selected]) {
+	row := rows[m.selected]
+	if row.isHeader {
+		return m, nil
+	}
+	for _, action := range actions.ForSkill(row.skill) {
 		if action.ID == id {
 			if !action.Available {
 				return m, nil
@@ -759,29 +800,119 @@ func (m *appModel) syncViewport() {
 	m.clampViewportOffset()
 }
 
-func (m *appModel) clampSelection() {
+type skillsRow struct {
+	isHeader   bool
+	groupName  string
+	skill      *model.Skill
+	skillIndex int
+}
+
+func (m appModel) visibleRows() []skillsRow {
 	items := m.filteredSkills()
-	if len(items) == 0 {
+	var rows []skillsRow
+	previousGroup := ""
+	for i, skill := range items {
+		group := listGroupLabel(skill)
+		if group != previousGroup {
+			rows = append(rows, skillsRow{
+				isHeader:   true,
+				groupName:  group,
+				skillIndex: -1,
+			})
+			previousGroup = group
+		}
+		if m.isCollapsed(group) {
+			continue
+		}
+		rows = append(rows, skillsRow{
+			isHeader:   false,
+			groupName:  group,
+			skill:      skill,
+			skillIndex: i,
+		})
+	}
+	return rows
+}
+
+func (m appModel) getGroupCounts(group string) (visible int, total int) {
+	items := m.filteredSkills()
+	for _, skill := range items {
+		if listGroupLabel(skill) == group {
+			total++
+			if !m.isCollapsed(group) {
+				visible++
+			}
+		}
+	}
+	return
+}
+
+func (m *appModel) collapseGroup(group string) {
+	if m.collapsedGroups == nil {
+		m.collapsedGroups = make(map[string]bool)
+	}
+	m.collapsedGroups[group] = true
+
+	rows := m.visibleRows()
+	for idx, r := range rows {
+		if r.isHeader && r.groupName == group {
+			m.selected = idx
+			break
+		}
+	}
+	m.clampSelection()
+}
+
+func (m *appModel) expandGroup(group string) {
+	if m.collapsedGroups == nil {
+		m.collapsedGroups = make(map[string]bool)
+	}
+	delete(m.collapsedGroups, group)
+
+	rows := m.visibleRows()
+	for idx, r := range rows {
+		if r.isHeader && r.groupName == group {
+			m.selected = idx
+			break
+		}
+	}
+	m.clampSelection()
+}
+
+func (m *appModel) clampSelection() {
+	rows := m.visibleRows()
+	if len(rows) == 0 {
 		m.selected = 0
 		return
 	}
 	if m.selected < 0 {
 		m.selected = 0
 	}
-	if m.selected >= len(items) {
-		m.selected = len(items) - 1
+	if m.selected >= len(rows) {
+		m.selected = len(rows) - 1
 	}
 }
 
+func (m appModel) isCollapsed(group string) bool {
+	if m.collapsedGroups == nil {
+		return false
+	}
+	return m.collapsedGroups[group]
+}
+
 func (m *appModel) toggleSelectedSkill() {
-	items := m.filteredSkills()
-	if len(items) == 0 || m.selected >= len(items) {
+	rows := m.visibleRows()
+	if len(rows) == 0 || m.selected < 0 || m.selected >= len(rows) {
+		return
+	}
+	row := rows[m.selected]
+	if row.isHeader {
 		return
 	}
 	if m.selectedKeys == nil {
 		m.selectedKeys = map[string]bool{}
 	}
-	key := skillKey(items[m.selected])
+	key := skillKey(row.skill)
 	if m.selectedKeys[key] {
 		delete(m.selectedKeys, key)
 	} else {
@@ -793,20 +924,22 @@ func (m *appModel) toggleSelectedSkill() {
 }
 
 func (m *appModel) selectCurrentSourceGroup() {
-	items := m.filteredSkills()
-	if len(items) == 0 || m.selected >= len(items) {
+	rows := m.visibleRows()
+	if len(rows) == 0 || m.selected < 0 || m.selected >= len(rows) {
 		return
 	}
-	currentGroup := sourceGroupKey(items[m.selected])
-	if currentGroup == "" {
+	row := rows[m.selected]
+	group := row.groupName
+	if group == "" {
 		return
 	}
 	if m.selectedKeys == nil {
 		m.selectedKeys = map[string]bool{}
 	}
 	changed := false
+	items := m.filteredSkills()
 	for _, skill := range items {
-		if sourceGroupKey(skill) == currentGroup {
+		if listGroupLabel(skill) == group {
 			m.selectedKeys[skillKey(skill)] = true
 			changed = true
 		}
@@ -817,42 +950,41 @@ func (m *appModel) selectCurrentSourceGroup() {
 }
 
 func (m *appModel) jumpSourceGroup(direction int) {
-	items := m.filteredSkills()
-	if len(items) == 0 || direction == 0 {
+	rows := m.visibleRows()
+	if len(rows) == 0 {
 		return
 	}
 	m.clampSelection()
-	starts := sourceGroupStartIndexes(items)
-	if len(starts) <= 1 {
+
+	var headerIndices []int
+	for idx, r := range rows {
+		if r.isHeader {
+			headerIndices = append(headerIndices, idx)
+		}
+	}
+	if len(headerIndices) <= 1 {
+		if len(headerIndices) == 1 {
+			m.selected = headerIndices[0]
+		}
 		return
 	}
-	currentGroup := 0
-	for i, start := range starts {
-		if start <= m.selected {
-			currentGroup = i
+
+	currentHeaderIdx := 0
+	for i, idx := range headerIndices {
+		if idx <= m.selected {
+			currentHeaderIdx = i
 		}
 	}
+
 	if direction > 0 {
-		currentGroup = (currentGroup + 1) % len(starts)
+		currentHeaderIdx = (currentHeaderIdx + 1) % len(headerIndices)
 	} else {
-		currentGroup = (currentGroup + len(starts) - 1) % len(starts)
+		currentHeaderIdx = (currentHeaderIdx + len(headerIndices) - 1) % len(headerIndices)
 	}
-	m.selected = starts[currentGroup]
+
+	m.selected = headerIndices[currentHeaderIdx]
 	m.actionResult = nil
 	m.viewport.GotoTop()
-}
-
-func sourceGroupStartIndexes(items []*model.Skill) []int {
-	starts := []int{}
-	previousGroup := ""
-	for i, skill := range items {
-		group := listGroupLabel(skill)
-		if i == 0 || group != previousGroup {
-			starts = append(starts, i)
-			previousGroup = group
-		}
-	}
-	return starts
 }
 
 func (m appModel) isSelected(skill *model.Skill) bool {
@@ -884,18 +1016,28 @@ func skillKey(skill *model.Skill) string {
 }
 
 func (m appModel) currentSelectedKey() string {
-	items := m.filteredSkills()
-	if len(items) == 0 || m.selected < 0 || m.selected >= len(items) {
+	rows := m.visibleRows()
+	if len(rows) == 0 || m.selected < 0 || m.selected >= len(rows) {
 		return ""
 	}
-	return skillKey(items[m.selected])
+	row := rows[m.selected]
+	if row.isHeader {
+		return "group:" + row.groupName
+	}
+	return "skill:" + skillKey(row.skill)
 }
 
 func (m *appModel) restoreSelection(selectedKey string, fallback int) {
-	items := m.filteredSkills()
+	rows := m.visibleRows()
 	if selectedKey != "" {
-		for i, skill := range items {
-			if skillKey(skill) == selectedKey {
+		for i, r := range rows {
+			key := ""
+			if r.isHeader {
+				key = "group:" + r.groupName
+			} else {
+				key = "skill:" + skillKey(r.skill)
+			}
+			if key == selectedKey {
 				m.selected = i
 				return
 			}
@@ -1062,7 +1204,7 @@ func (m appModel) View() string {
 
 	listWidth, rightWidth, topHeight, bottomHeight := viewModel.getThreePaneLayout()
 
-	listLayout := newPaneLayout(listWidth, viewModel.height - 1)
+	listLayout := newPaneLayout(listWidth, viewModel.height-1)
 	metadataLayout := newPaneLayout(rightWidth, topHeight)
 	previewLayout := newPaneLayout(rightWidth, bottomHeight)
 
@@ -1272,62 +1414,69 @@ func (m appModel) listPane(height, width int) string {
 	}
 
 	visible := max(1, height-len(lines))
-	rows := []listRow{}
-	previousGroup := ""
-	selectedRow := 0
-	for i := 0; i < len(items); i++ {
-		skill := items[i]
-		view := display.Skill(skill)
-		if group := listGroupLabel(skill); group != previousGroup {
-			rows = append(rows, listRow{line: dimStyle.Render(truncate("─ "+group, width)), skillIndex: -1})
-			previousGroup = group
-		}
-		mark := "  "
-		if m.isSelected(skill) {
-			mark = "● "
-		}
-		coreLabel := fmt.Sprintf("%s%s [%s]", mark, view.Name, scopeBadge(view.Scope))
-		if m.agent != "" {
-			coreLabel += " " + agentVisibilityBadge(items[i], m.agent)
-		}
-		issueErrors, issueWarnings := healthIssueCounts(view.HealthIssues)
-		badgeLen := 0
-		if issueErrors > 0 {
-			badgeLen = len(fmt.Sprintf(" !%d", issueErrors))
-		} else if issueWarnings > 0 {
-			badgeLen = len(fmt.Sprintf(" ⚠ %d", issueWarnings))
-		}
-		truncatedCore := truncate(coreLabel, width-badgeLen)
+	vRows := m.visibleRows()
+	var renderedRows []string
+	selectedRow := m.selected
+
+	for idx, row := range vRows {
 		var line string
-		if i == m.selected {
-			badge := ""
-			if issueErrors > 0 {
-				badge = fmt.Sprintf(" !%d", issueErrors)
-			} else if issueWarnings > 0 {
-				badge = fmt.Sprintf(" ⚠ %d", issueWarnings)
+		if row.isHeader {
+			affordance := "- "
+			if m.isCollapsed(row.groupName) {
+				affordance = "+ "
 			}
-			line = selectedStyle.Render(truncatedCore + badge)
-		} else if issueErrors > 0 {
-			badge := errorStyle.Render(fmt.Sprintf(" !%d", issueErrors))
-			line = errorStyle.Render(truncatedCore) + badge
-		} else if issueWarnings > 0 {
-			badge := warningStyle.Render(fmt.Sprintf(" ⚠ %d", issueWarnings))
-			line = truncatedCore + badge
+			headerText := affordance + row.groupName
+			if idx == selectedRow {
+				line = selectedStyle.Render(truncate(headerText, width))
+			} else {
+				line = dimStyle.Render(truncate(headerText, width))
+			}
 		} else {
-			line = truncatedCore
+			view := display.Skill(row.skill)
+			mark := "  "
+			if m.isSelected(row.skill) {
+				mark = "● "
+			}
+			coreLabel := fmt.Sprintf("%s%s [%s]", mark, view.Name, scopeBadge(view.Scope))
+			if m.agent != "" {
+				coreLabel += " " + agentVisibilityBadge(row.skill, m.agent)
+			}
+			issueErrors, issueWarnings := healthIssueCounts(view.HealthIssues)
+			badgeLen := 0
+			if issueErrors > 0 {
+				badgeLen = len(fmt.Sprintf(" !%d", issueErrors))
+			} else if issueWarnings > 0 {
+				badgeLen = len(fmt.Sprintf(" ⚠ %d", issueWarnings))
+			}
+			truncatedCore := truncate(coreLabel, width-badgeLen)
+			if idx == selectedRow {
+				badge := ""
+				if issueErrors > 0 {
+					badge = fmt.Sprintf(" !%d", issueErrors)
+				} else if issueWarnings > 0 {
+					badge = fmt.Sprintf(" ⚠ %d", issueWarnings)
+				}
+				line = selectedStyle.Render(truncatedCore + badge)
+			} else if issueErrors > 0 {
+				badge := errorStyle.Render(fmt.Sprintf(" !%d", issueErrors))
+				line = errorStyle.Render(truncatedCore) + badge
+			} else if issueWarnings > 0 {
+				badge := warningStyle.Render(fmt.Sprintf(" ⚠ %d", issueWarnings))
+				line = truncatedCore + badge
+			} else {
+				line = truncatedCore
+			}
 		}
-		if i == m.selected {
-			selectedRow = len(rows)
-		}
-		rows = append(rows, listRow{line: line, skillIndex: i})
+		renderedRows = append(renderedRows, line)
 	}
+
 	start := 0
 	if selectedRow >= visible {
 		start = selectedRow - visible + 1
 	}
-	end := min(len(rows), start+visible)
-	for _, row := range rows[start:end] {
-		lines = append(lines, row.line)
+	end := min(len(renderedRows), start+visible)
+	for _, line := range renderedRows[start:end] {
+		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1395,17 +1544,21 @@ func (m appModel) detailText(width int) string {
 }
 
 func (m appModel) detailTitle() string {
-	items := m.filteredSkills()
-	if len(items) == 0 {
+	rows := m.visibleRows()
+	if len(rows) == 0 || m.selected < 0 || m.selected >= len(rows) {
 		return "2 Details"
 	}
-	view := display.Skill(items[m.selected])
+	row := rows[m.selected]
+	if row.isHeader {
+		return "2 Details: " + row.groupName
+	}
+	view := display.Skill(row.skill)
 	return "2 Details: " + view.Name
 }
 
 func (m appModel) metadataLines(width int) []string {
-	items := m.filteredSkills()
-	if len(items) == 0 {
+	rows := m.visibleRows()
+	if len(rows) == 0 {
 		var lines []string
 
 		if len(m.result.HealthIssues) > 0 {
@@ -1457,12 +1610,40 @@ func (m appModel) metadataLines(width int) []string {
 
 		return lines
 	}
-	view := display.Skill(items[m.selected])
+
+	if m.selected < 0 || m.selected >= len(rows) {
+		return []string{dimStyle.Render("Select a skill to inspect it.")}
+	}
+
+	row := rows[m.selected]
+	if row.isHeader {
+		visible, total := m.getGroupCounts(row.groupName)
+		stateStr := "expanded"
+		if m.isCollapsed(row.groupName) {
+			stateStr = "collapsed"
+		}
+		lines := []string{
+			formatMetaLine("Source:", row.groupName, width),
+			formatMetaLine("State:", stateStr, width),
+			formatMetaLine("Skills:", fmt.Sprintf("%d visible / %d total", visible, total), width),
+			"",
+			dimStyle.Render("Source-level actions coming later."),
+		}
+		if len(m.result.HealthIssues) > 0 {
+			lines = append(lines, "", errorStyle.Render("Scan health"))
+			for _, issue := range m.result.HealthIssues {
+				lines = append(lines, truncate(fmt.Sprintf("- %s: %s", compat.SanitizeMetadata(issue.Type), compat.SanitizeMetadata(issue.Message)), width))
+			}
+		}
+		return lines
+	}
+
+	view := display.Skill(row.skill)
 	lines := []string{
 		formatMetaLine("Scope:", string(view.Scope), width),
 		formatMetaLine("Lock:", display.LockSummary(view), width),
 	}
-	if sourceLines := sourceDetailLines(items[m.selected], width); len(sourceLines) > 0 {
+	if sourceLines := sourceDetailLines(row.skill, width); len(sourceLines) > 0 {
 		lines = append(lines, sourceLines...)
 	}
 	if view.CanonicalPath != "" {
@@ -1536,8 +1717,8 @@ func (m appModel) metadataLines(width int) []string {
 }
 
 func (m appModel) previewLines(width int) []string {
-	items := m.filteredSkills()
-	if len(items) == 0 {
+	rows := m.visibleRows()
+	if len(rows) == 0 {
 		if m.result.Preflight != nil && !m.result.Preflight.CanRunSkills {
 			return []string{
 				errorStyle.Render("Preview Unavailable"),
@@ -1549,7 +1730,18 @@ func (m appModel) previewLines(width int) []string {
 		}
 	}
 
-	view := display.Skill(items[m.selected])
+	if m.selected < 0 || m.selected >= len(rows) {
+		return []string{dimStyle.Render("No skill selected for preview.")}
+	}
+
+	row := rows[m.selected]
+	if row.isHeader {
+		return []string{
+			dimStyle.Render("Preview not applicable for source groups."),
+		}
+	}
+
+	view := display.Skill(row.skill)
 	if view.Preview == "" {
 		return []string{dimStyle.Render("No preview available for this skill.")}
 	}
@@ -1563,11 +1755,15 @@ func (m appModel) previewLines(width int) []string {
 }
 
 func (m appModel) detailLines(width int) []string {
-	items := m.filteredSkills()
-	if len(items) == 0 {
+	rows := m.visibleRows()
+	if len(rows) == 0 || m.selected < 0 || m.selected >= len(rows) {
 		return m.metadataLines(width)
 	}
-	view := display.Skill(items[m.selected])
+	row := rows[m.selected]
+	if row.isHeader {
+		return m.metadataLines(width)
+	}
+	view := display.Skill(row.skill)
 	lines := []string{
 		titleStyle.Render(view.Name),
 		"",
@@ -1848,8 +2044,9 @@ func (m appModel) helpModalOverlay(layout appLayout) string {
 		"  ↑/↓, j/k        Move selection (Skills focus) or scroll (Metadata/Preview)",
 		"  1 / 2 / 3       Focus Skills (1), Metadata (2), or Preview (3) pane",
 		"  tab / shift-tab Cycle focus forward / backward through panes",
-		"  →/l / ←/h       Cycle focus forward / backward through panes",
-		"  [ / ]           Jump to previous / next source group",
+		"  ← / →           Move focus backward / forward outside Skills; jump groups in Skills",
+		"  h / l           Collapse / expand current source group in Skills",
+		"  [ / ]           Jump to previous / next source group in Skills",
 		"",
 		sectionHeaderStyle.Render("Filters:"),
 		"  P / G           Filter Project-only / Global-only scope",
