@@ -6,12 +6,14 @@
 
 **Mission control for agent skills to _stay lazy._**
 
-[![Go](https://img.shields.io/badge/Go-1.26-3dbbff?style=flat-square&logo=go&logoColor=white&labelColor=0f172a)](https://go.dev)
-[![TUI](https://img.shields.io/badge/TUI-Bubble%20Tea-ff79f2?style=flat-square&labelColor=0f172a)](https://github.com/charmbracelet/bubbletea)
+[![CI](https://img.shields.io/github/actions/workflow/status/alvinunreal/lazyskills/ci.yml?branch=main&style=flat-square&label=CI&labelColor=0f172a&color=3dbbff)](https://github.com/alvinunreal/lazyskills/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/alvinunreal/lazyskills?style=flat-square)](https://goreportcard.com/report/github.com/alvinunreal/lazyskills)
+[![Release](https://img.shields.io/github/v/release/alvinunreal/lazyskills?style=flat-square&labelColor=0f172a&color=ff79f2)](https://github.com/alvinunreal/lazyskills/releases/latest)
+[![Go](https://img.shields.io/github/go-mod/go-version/alvinunreal/lazyskills?style=flat-square&logo=go&logoColor=white&label=Go&labelColor=0f172a&color=3dbbff)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-b253f5?style=flat-square&labelColor=0f172a)](LICENSE)
-[![Status](https://img.shields.io/badge/status-early-556bf4?style=flat-square&labelColor=0f172a)](#)
+[![Stars](https://img.shields.io/github/stars/alvinunreal/lazyskills?style=flat-square&labelColor=0f172a&color=556bf4)](https://github.com/alvinunreal/lazyskills/stargazers)
 
-<img src="assets/banner.webp" alt="Lazy Skills — mission control for agent skills. Stay lazy." width="100%">
+<img src="assets/banner.webp" alt="Lazy Skills - mission control for agent skills. Stay lazy." width="100%">
 
 _"I don't debug broken skills by hand - I have a TUI to be disappointed for me."_
 
@@ -19,9 +21,19 @@ _"I don't debug broken skills by hand - I have a TUI to be disappointed for me."
 
 ## 🌴 Overview
 
-LazySkills is a terminal UI for agent skills. It shows what skills are installed, which agents can see them, why visibility may be broken, and provides guarded actions for common skill operations — all from one screen.
+LazySkills is a terminal UI for agent skills. It shows what skills are installed, which agents can see them, why visibility may be broken, and provides guarded actions for common skill operations, all from one screen.
 
 It is designed to complement the official `skills` CLI, not replace it.
+
+## ⭐ Star for a chance to win stickers
+
+<div align="center">
+
+<img src="assets/stickers.webp" alt="Lazy Skills stickers" width="100%">
+
+</div>
+
+There are Lazy Skills stickers. Star the repo and you're entered into a draw to win some, shipped worldwide at no cost to you.
 
 ## ✨ Features
 
@@ -32,7 +44,7 @@ It is designed to complement the official `skills` CLI, not replace it.
 ✅ `SKILL.md` preview with safe terminal sanitization  
 ✅ Responsive panes and scrollable details  
 ✅ Source/repo group headers in the skill list  
-✅ Guarded actions — refresh/rescan, open in `$EDITOR`, reinstall/update, remove, and bulk update/remove via the official `skills` CLI  
+✅ Guarded actions: refresh/rescan, open in `$EDITOR`, reinstall/update, remove, and bulk update/remove via the official `skills` CLI  
 ✅ Source/repo-aware selection for grouped workflows  
 ✅ Structured command execution with confirmation, captured output, and rescan after successful mutations
 
