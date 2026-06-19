@@ -3,6 +3,8 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -1523,7 +1525,7 @@ func TestRichSourceInventoryMetadataAndActions(t *testing.T) {
 	if !strings.Contains(prevJoined, "• One [P]") || !strings.Contains(prevJoined, "• Two [G]") {
 		t.Errorf("expected skills listed with scope badges in preview, got %q", prevJoined)
 	}
-	if !strings.Contains(prevJoined, "Only installed skills are shown.") || !strings.Contains(prevJoined, "Source discovery can be added later.") {
+	if !strings.Contains(prevJoined, "Discovery shows installed and available skills from this source.") || !strings.Contains(prevJoined, "Use d to refresh local/remote source discovery.") {
 		t.Errorf("expected preview footnotes in preview, got %q", prevJoined)
 	}
 
@@ -1552,5 +1554,364 @@ func TestRichSourceInventoryMetadataAndActions(t *testing.T) {
 	}
 	if hasSkillLevel {
 		t.Errorf("did not expect skill-scoped actions for source row, got %+v", acts)
+	}
+}
+
+func TestRemoteDiscoverySuccess(t *testing.T) {
+	oldGitClone := gitClone
+	defer func() { gitClone = oldGitClone }()
+
+	var capturedURL, capturedRef string
+	gitClone = func(url, ref, tempDir string) error {
+		capturedURL = url
+		capturedRef = ref
+		skillPath := filepath.Join(tempDir, "SKILL.md")
+		skillContent := "---\nname: \"Remote Skill\"\ndescription: \"Remote description\"\n---\nRemote preview content"
+		if err := os.WriteFile(skillPath, []byte(skillContent), 0o644); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	m := appModel{
+		width: 120, height: 32, selected: 0,
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{Name: "Existing", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+			},
+		},
+	}
+	m.syncViewport()
+
+	updated, cmd := m.startDiscovery("owner/repo")
+	if cmd == nil {
+		t.Fatal("expected discovery cmd")
+	}
+	msg := cmd()
+	updated, _ = updated.Update(msg)
+	next := updated.(appModel)
+
+	if next.discovery["owner/repo"].Status != DiscoveryReady {
+		t.Fatalf("expected discovery ready, got status %s, error: %s", next.discovery["owner/repo"].Status, next.discovery["owner/repo"].Error)
+	}
+	if capturedURL != "https://github.com/owner/repo" {
+		t.Fatalf("expected URL to be https://github.com/owner/repo, got %s", capturedURL)
+	}
+	if capturedRef != "" {
+		t.Fatalf("expected empty captured ref, got %s", capturedRef)
+	}
+
+	rows := next.visibleRows()
+	var foundAvailable bool
+	for _, r := range rows {
+		if r.isAvailable && r.discoveredSkill != nil && r.discoveredSkill.Name == "Remote Skill" {
+			foundAvailable = true
+			break
+		}
+	}
+	if !foundAvailable {
+		t.Fatalf("expected available row for 'Remote Skill', but not found in rows: %#v", rows)
+	}
+}
+
+func TestRemoteDiscoveryFailure(t *testing.T) {
+	oldGitClone := gitClone
+	defer func() { gitClone = oldGitClone }()
+
+	gitClone = func(url, ref, tempDir string) error {
+		return fmt.Errorf("network connection error")
+	}
+
+	m := appModel{
+		width: 120, height: 32, selected: 0,
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{Name: "Existing", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+			},
+		},
+	}
+	updated, cmd := m.startDiscovery("owner/repo")
+	if cmd == nil {
+		t.Fatal("expected discovery cmd")
+	}
+	msg := cmd()
+	updated, _ = updated.Update(msg)
+	next := updated.(appModel)
+
+	disc := next.discovery["owner/repo"]
+	if disc.Status != DiscoveryFailed {
+		t.Fatalf("expected status failed, got %s", disc.Status)
+	}
+	if !strings.Contains(disc.Error, "network connection error") {
+		t.Fatalf("expected error to contain network connection error, got %s", disc.Error)
+	}
+}
+
+func TestRemoteDiscoveryRejectsUnsafe(t *testing.T) {
+	cases := []struct {
+		source string
+		safe   bool
+	}{
+		{"owner/repo", true},
+		{"github:owner/repo", true},
+		{"https://github.com/owner/repo", true},
+		{"https://github.com/owner/repo.git", true},
+		{"owner/repo#ref", true},
+		{"owner/repo#ref-name_123.4", true},
+		{"owner/repo#ref/with/slash", true},
+		{"-owner/repo", false},
+		{"owner/-repo", false},
+		{"owner/repo#--ref", false},
+		{"owner/repo;-somecmd", false},
+		{"owner/repo/sub", false},
+		{"https://gitlab.com/owner/repo", false},
+	}
+	for _, tc := range cases {
+		_, _, ok := parseRemoteGitHubSource(tc.source)
+		if ok != tc.safe {
+			t.Errorf("expected %q safe=%v, got %v", tc.source, tc.safe, ok)
+		}
+	}
+}
+
+func TestIsSafeGitHubRef(t *testing.T) {
+	cases := []struct {
+		ref  string
+		safe bool
+	}{
+		{"main", true},
+		{"v1.2.3", true},
+		{"feature/branch-name_1", true},
+		{"", false},
+		{"-branch", false},
+		{"/branch", false},
+		{"branch/", false},
+		{"branch..name", false},
+		{"branch@{1}", false},
+		{"branch\\name", false},
+		{"branch\x00name", false},
+		{"branch\x1bname", false},
+		{"branch name", false},
+	}
+	for _, tc := range cases {
+		ok := isSafeGitHubRef(tc.ref)
+		if ok != tc.safe {
+			t.Errorf("expected ref %q safe=%v, got %v", tc.ref, tc.safe, ok)
+		}
+	}
+}
+
+func TestRemoteDiscoverySanitization(t *testing.T) {
+	oldGitClone := gitClone
+	defer func() { gitClone = oldGitClone }()
+
+	gitClone = func(url, ref, tempDir string) error {
+		skillPath := filepath.Join(tempDir, "SKILL.md")
+		skillContent := "---\nname: \"Bad\\u001b[31m Skill\"\ndescription: \"Bad\\u001b[31m Description\"\n---\nBad\x1b[31m preview content"
+		if err := os.WriteFile(skillPath, []byte(skillContent), 0o644); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	m := appModel{
+		width: 120, height: 32, selected: 0,
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{Name: "Existing", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+			},
+		},
+	}
+	m.syncViewport()
+
+	updated, cmd := m.startDiscovery("owner/repo")
+	if cmd == nil {
+		t.Fatal("expected discovery cmd")
+	}
+	msg := cmd()
+	updated, _ = updated.Update(msg)
+	next := updated.(appModel)
+
+	disc := next.discovery["owner/repo"]
+	if disc.Status != DiscoveryReady {
+		t.Fatalf("expected discovery ready, got status %s, error: %s", disc.Status, disc.Error)
+	}
+
+	if len(disc.Skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(disc.Skills))
+	}
+
+	ds := disc.Skills[0]
+	if strings.Contains(ds.Name, "\x1b") {
+		t.Errorf("expected name to be sanitized, got %q", ds.Name)
+	}
+	if strings.Contains(ds.Description, "\x1b") {
+		t.Errorf("expected description to be sanitized, got %q", ds.Description)
+	}
+	if strings.Contains(ds.Preview, "\x1b") {
+		t.Errorf("expected preview to be sanitized, got %q", ds.Preview)
+	}
+}
+
+func TestRemoteDiscoveryUnsafeRef(t *testing.T) {
+	m := appModel{
+		width: 120, height: 32, selected: 0,
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{Name: "Existing", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+			},
+		},
+	}
+	// Verify that starting discovery on an unsafe ref fails immediately with a clear message
+	updated, cmd := m.startDiscovery("owner/repo#--unsafe-ref")
+	if cmd != nil {
+		t.Fatal("expected discovery cmd to be nil for unsafe ref")
+	}
+	next := updated.(appModel)
+	disc := next.discovery["owner/repo#--unsafe-ref"]
+	if disc.Status != DiscoveryFailed {
+		t.Fatalf("expected status failed, got %s", disc.Status)
+	}
+	if !strings.Contains(disc.Error, "ref contains unsafe or invalid characters") {
+		t.Fatalf("expected error to mention unsafe ref, got %s", disc.Error)
+	}
+}
+
+func TestRemoteDiscoveryUnsafeFallbackRef(t *testing.T) {
+	oldGitClone := gitClone
+	defer func() { gitClone = oldGitClone }()
+
+	calledClone := false
+	gitClone = func(url, ref, tempDir string) error {
+		calledClone = true
+		return nil
+	}
+
+	m := appModel{
+		width: 120, height: 32, selected: 0,
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{
+					Name:      "Existing",
+					Scope:     model.ScopeProject,
+					LocalLock: &model.LocalLockEntry{Source: "owner/repo", Ref: "--unsafe-ref"},
+				},
+			},
+		},
+	}
+	// Trigger discovery on "owner/repo" which has an unsafe fallback ref
+	updated, cmd := m.startDiscovery("owner/repo")
+	if cmd != nil {
+		t.Fatal("expected discovery cmd to be nil for unsafe fallback ref")
+	}
+	next := updated.(appModel)
+	disc := next.discovery["owner/repo"]
+	if disc.Status != DiscoveryFailed {
+		t.Fatalf("expected status failed, got %s", disc.Status)
+	}
+	if !strings.Contains(disc.Error, "ref contains unsafe or invalid characters") {
+		t.Fatalf("expected error to mention unsafe ref, got %s", disc.Error)
+	}
+	if calledClone {
+		t.Fatal("gitClone was called but it should not have been")
+	}
+}
+
+func TestSourceDiscoverActionAvailability(t *testing.T) {
+	m := appModel{
+		width: 120, height: 32, selected: 0,
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{Name: "Untracked", Scope: model.ScopeProject}, // Custom / untracked group
+			},
+		},
+	}
+	m.syncViewport()
+	acts := m.sourceActions("Custom / untracked")
+	var discAction *actions.CommandPreview
+	for _, act := range acts {
+		if act.ID == "source_discover" {
+			discAction = &act
+			break
+		}
+	}
+	if discAction == nil {
+		t.Fatal("expected source_discover action to be present")
+	}
+	if discAction.Available {
+		t.Fatal("expected discovery to be unavailable for untracked/custom group")
+	}
+	if !strings.Contains(discAction.Reason, "requires a local checkout") {
+		t.Fatalf("expected meaningful reason, got %q", discAction.Reason)
+	}
+	if discAction.Command != "discover Custom / untracked" {
+		t.Fatalf("expected Command text 'discover Custom / untracked', got %q", discAction.Command)
+	}
+}
+
+func TestRemoteDiscoveryRawFallbackRefBypass(t *testing.T) {
+	oldGitClone := gitClone
+	defer func() { gitClone = oldGitClone }()
+
+	calledClone := false
+	gitClone = func(url, ref, tempDir string) error {
+		calledClone = true
+		return nil
+	}
+
+	// Case 1: Ref contains control/escape char \x1b
+	m1 := appModel{
+		width: 120, height: 32, selected: 0,
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{
+					Name:      "Existing",
+					Scope:     model.ScopeProject,
+					LocalLock: &model.LocalLockEntry{Source: "owner/repo", Ref: "main\x1b"},
+				},
+			},
+		},
+	}
+	updated1, cmd1 := m1.startDiscovery("owner/repo")
+	if cmd1 != nil {
+		t.Fatal("expected discovery cmd to be nil for unsafe fallback ref containing escape char")
+	}
+	next1 := updated1.(appModel)
+	disc1 := next1.discovery["owner/repo"]
+	if disc1.Status != DiscoveryFailed {
+		t.Fatalf("expected status failed, got %s", disc1.Status)
+	}
+	if !strings.Contains(disc1.Error, "ref contains unsafe or invalid characters") {
+		t.Fatalf("expected error to mention unsafe ref, got %s", disc1.Error)
+	}
+
+	// Case 2: Ref contains newline char \n
+	m2 := appModel{
+		width: 120, height: 32, selected: 0,
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{
+					Name:      "Existing",
+					Scope:     model.ScopeProject,
+					LocalLock: &model.LocalLockEntry{Source: "owner/repo", Ref: "main\nnext"},
+				},
+			},
+		},
+	}
+	updated2, cmd2 := m2.startDiscovery("owner/repo")
+	if cmd2 != nil {
+		t.Fatal("expected discovery cmd to be nil for unsafe fallback ref containing newline")
+	}
+	next2 := updated2.(appModel)
+	disc2 := next2.discovery["owner/repo"]
+	if disc2.Status != DiscoveryFailed {
+		t.Fatalf("expected status failed, got %s", disc2.Status)
+	}
+	if !strings.Contains(disc2.Error, "ref contains unsafe or invalid characters") {
+		t.Fatalf("expected error to mention unsafe ref, got %s", disc2.Error)
+	}
+
+	if calledClone {
+		t.Fatal("gitClone was called but it should not have been")
 	}
 }

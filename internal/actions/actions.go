@@ -142,6 +142,35 @@ func bulkBatch(skills []*model.Skill, resolve SkillsResolver, actionID string) (
 	return batch, true, ""
 }
 
+func ForAvailableSkill(source, name string) []CommandPreview {
+	return ForAvailableSkillWithResolver(source, name, ResolveSkillsCommand)
+}
+
+func ForAvailableSkillWithResolver(source, name string, resolve SkillsResolver) []CommandPreview {
+	if !safeExecValue(source) || strings.HasPrefix(source, "-") {
+		return []CommandPreview{unavailablePreview("Install selected skill", "source is empty, option-like, or contains unsafe characters")}
+	}
+	if !safeExecValue(name) || strings.HasPrefix(name, "-") {
+		return []CommandPreview{unavailablePreview("Install selected skill", "skill name is empty, option-like, or contains unsafe characters")}
+	}
+
+	if resolve == nil {
+		resolve = ResolveSkillsCommand
+	}
+	available, reason := HasSkillsOrNpx()
+	program, baseArgs := resolve()
+
+	args := append([]string{}, baseArgs...)
+	args = append(args, "add", source, "--skill", name, "--yes")
+
+	preview := newPreview("install_skill", "Install selected skill", program, args, "Install this skill to project.", true, true, false, "yes")
+	if !available {
+		preview.Available = false
+		preview.Reason = reason
+	}
+	return []CommandPreview{preview}
+}
+
 func ForSkillWithResolver(sk *model.Skill, resolve SkillsResolver) []CommandPreview {
 	if sk == nil {
 		return nil

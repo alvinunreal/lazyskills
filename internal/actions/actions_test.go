@@ -288,3 +288,45 @@ func TestMissingDepsDisablesActions(t *testing.T) {
 		t.Errorf("expected app-level init to be unavailable when deps are missing")
 	}
 }
+
+func TestForAvailableSkill(t *testing.T) {
+	LookPath = func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+	previews := ForAvailableSkill("owner/repo", "test-skill")
+	if len(previews) != 1 {
+		t.Fatalf("expected 1 install preview, got %d", len(previews))
+	}
+	inst := previews[0]
+	if inst.ID != "install_skill" || !inst.Mutates || !inst.RequiresConfirm {
+		t.Errorf("unexpected install preview: %+v", inst)
+	}
+	if !containsArg(inst.Exec.Args, "owner/repo") || !containsArg(inst.Exec.Args, "test-skill") {
+		t.Errorf("expected source and skill name in args, got %+v", inst.Exec.Args)
+	}
+}
+
+func TestForAvailableSkillUnsafeRejection(t *testing.T) {
+	cases := []struct {
+		source string
+		name   string
+	}{
+		{"--bad-source", "name"},
+		{"source", "--bad-name"},
+		{"", "name"},
+		{"source", ""},
+		{"source\x1b", "name"},
+		{"source", "name\n"},
+		{"bad\x00source", "name"},
+		{"source", "name\r"},
+	}
+	for _, tc := range cases {
+		previews := ForAvailableSkill(tc.source, tc.name)
+		if len(previews) != 1 {
+			t.Fatalf("expected 1 preview, got %d", len(previews))
+		}
+		if previews[0].Available {
+			t.Errorf("expected preview to be unavailable for source=%q name=%q", tc.source, tc.name)
+		}
+	}
+}
