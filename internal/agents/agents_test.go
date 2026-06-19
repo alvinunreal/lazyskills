@@ -12,7 +12,16 @@ func testEnv(home string, existing ...string) Env {
 	}
 	return Env{
 		Home: home,
-		Vars: map[string]string{},
+		Vars: map[string]string{
+			"APPDATA":                 "",
+			"AUTOHAND_HOME":           "",
+			"CLAUDE_CONFIG_DIR":       "",
+			"CODEX_HOME":              "",
+			"FLATPAK_XDG_CONFIG_HOME": "",
+			"HERMES_HOME":             "",
+			"VIBE_HOME":               "",
+			"XDG_CONFIG_HOME":         "",
+		},
 		ExistsFunc: func(path string) bool {
 			return seen[path]
 		},

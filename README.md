@@ -110,15 +110,15 @@ LazySkills publishes `.deb` and `.rpm` packages for Linux amd64 and arm64 releas
 Debian / Ubuntu:
 
 ```bash
-curl -LO https://github.com/alvinunreal/lazyskills/releases/download/v0.1.0/lazyskills_0.1.0_linux_amd64.deb
-sudo apt install ./lazyskills_0.1.0_linux_amd64.deb
+curl -LO https://github.com/alvinunreal/lazyskills/releases/download/v0.1.1/lazyskills_0.1.1_linux_amd64.deb
+sudo apt install ./lazyskills_0.1.1_linux_amd64.deb
 ```
 
 Fedora / RHEL / openSUSE:
 
 ```bash
-curl -LO https://github.com/alvinunreal/lazyskills/releases/download/v0.1.0/lazyskills_0.1.0_linux_amd64.rpm
-sudo dnf install ./lazyskills_0.1.0_linux_amd64.rpm
+curl -LO https://github.com/alvinunreal/lazyskills/releases/download/v0.1.1/lazyskills_0.1.1_linux_amd64.rpm
+sudo dnf install ./lazyskills_0.1.1_linux_amd64.rpm
 ```
 
 Use the `arm64` package instead on ARM Linux machines.
