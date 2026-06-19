@@ -4,3 +4,7 @@
 
 .slim/deepwork/
 .codegraph/
+.DS_Store
+
+# Local asset scratch / dump folder — not for the repo
+lfs/

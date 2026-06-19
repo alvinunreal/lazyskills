@@ -1,28 +1,42 @@
-# LazySkills
+<div align="center">
 
-LazySkills is a terminal control room for agent skills. It shows what skills are installed, which agents can see them, why visibility may be broken, and provides guarded actions for common skill operations.
+<img src="assets/lazyskills-wide.svg" alt="Lazy Skills" width="640">
+
+# Lazy Skills
+
+**Mission control for agent skills to _stay lazy._**
+
+[![Go](https://img.shields.io/badge/Go-1.26-3dbbff?style=flat-square&logo=go&logoColor=white&labelColor=0f172a)](https://go.dev)
+[![TUI](https://img.shields.io/badge/TUI-Bubble%20Tea-ff79f2?style=flat-square&labelColor=0f172a)](https://github.com/charmbracelet/bubbletea)
+[![License](https://img.shields.io/badge/license-MIT-b253f5?style=flat-square&labelColor=0f172a)](LICENSE)
+[![Status](https://img.shields.io/badge/status-early-556bf4?style=flat-square&labelColor=0f172a)](#)
+
+<img src="assets/banner.webp" alt="Lazy Skills — mission control for agent skills. Stay lazy." width="100%">
+
+_"I don't debug broken skills by hand - I have a TUI to be disappointed for me."_
+
+</div>
+
+## 🌴 Overview
+
+LazySkills is a terminal UI for agent skills. It shows what skills are installed, which agents can see them, why visibility may be broken, and provides guarded actions for common skill operations — all from one screen.
 
 It is designed to complement the official `skills` CLI, not replace it.
 
-## Features
+## ✨ Features
 
-- LazyGit-style Bubble Tea TUI
-- Project and global skill inventory
-- Agent compatibility diagnostics based on the upstream `skills` registry
-- Visibility reasons per agent, including missing links, broken symlinks, unsupported global installs, and ghost agent-directory skills
-- `SKILL.md` preview with safe terminal sanitization
-- Responsive panes and scrollable details
-- Source/repo group headers in the skill list
-- Guarded actions:
-  - refresh/rescan
-  - open selected skill in `$EDITOR`
-  - reinstall/update selected skill through the official `skills` CLI
-  - remove selected skill through the official `skills` CLI
-  - bulk reinstall/update or remove marked skills
-- Source/repo-aware selection for grouped workflows
-- Structured command execution with confirmation, captured output, and rescan after successful mutations
+✅ Fast, keyboard-driven Bubble Tea TUI  
+✅ Project and global skill inventory  
+✅ Agent compatibility diagnostics based on the upstream `skills` registry  
+✅ Visibility reasons per agent, including missing links, broken symlinks, unsupported global installs, and ghost agent-directory skills  
+✅ `SKILL.md` preview with safe terminal sanitization  
+✅ Responsive panes and scrollable details  
+✅ Source/repo group headers in the skill list  
+✅ Guarded actions — refresh/rescan, open in `$EDITOR`, reinstall/update, remove, and bulk update/remove via the official `skills` CLI  
+✅ Source/repo-aware selection for grouped workflows  
+✅ Structured command execution with confirmation, captured output, and rescan after successful mutations
 
-## Install / build
+## 🛠️ Install / build
 
 ```bash
 go build ./cmd/lazyskills
@@ -41,7 +55,7 @@ Or scan as JSON:
 ./lazyskills scan --json --cwd /path/to/project
 ```
 
-## Usage
+## ⌨️ Usage
 
 ```bash
 lazyskills [--cwd <path>]
@@ -72,7 +86,7 @@ Mutating actions open a centered confirmation prompt. Press Enter for the defaul
 
 The skill list groups adjacent skills by source/repo when lock metadata is available. Skill details also show the exact folder and ref. Use `s` to mark every skill from the current source/repo, then `u` or `x` to update or remove that group with confirmation.
 
-## How actions work
+## ⚡ How actions work
 
 LazySkills delegates install/update/remove behavior to the official `skills` CLI. It resolves commands as:
 
@@ -81,20 +95,20 @@ LazySkills delegates install/update/remove behavior to the official `skills` CLI
 
 Commands are executed as structured argv, not shell strings. Output is captured, sanitized, capped, and displayed in the TUI. Successful mutations trigger a rescan.
 
-## Supported agents
+## 🤖 Supported agents
 
 LazySkills mirrors the upstream `vercel-labs/skills` agent registry, including universal `.agents/skills` agents, agent-specific skill directories, global support, and installed-agent detection heuristics.
 
 The registry is manually ported for now. A generated parity check is a planned follow-up.
 
-## Safety and limitations
+## 🛟 Safety and limitations
 
 - LazySkills does not reimplement remote clone/install/update/remove logic in Go.
 - Search/marketplace flows are not implemented.
 - `skills use` integration is not implemented.
 - Agent cycling is functional but not yet a searchable picker.
 
-## Development
+## 🧪 Development
 
 ```bash
 go test ./...
