@@ -13,6 +13,7 @@ import (
 	"lazyskills/internal/frontmatter"
 	"lazyskills/internal/locks"
 	"lazyskills/internal/model"
+	"lazyskills/internal/visibility"
 )
 
 func Run(cwd string) (model.ScanResult, error) {
@@ -38,6 +39,7 @@ func Run(cwd string) (model.ScanResult, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		res.HealthIssues = append(res.HealthIssues, model.HealthIssue{Type: "corrupt_global_lock", Severity: "warning", Message: err.Error(), Path: res.GlobalLock})
 	}
+	projectVisibility, globalVisibility := readVisibilityStates(absCwd, &res)
 
 	for _, loc := range agents.Locations(absCwd) {
 		scanLocation(loc, skills)
@@ -74,7 +76,7 @@ func Run(cwd string) (model.ScanResult, error) {
 				sk.AddHealthIssue(model.HealthIssue{Type: "ghost_agent_skill", Severity: "warning", Message: "skill exists in an agent-specific directory without a canonical .agents/skills copy"})
 			}
 		}
-		sk.Visibility = skillVisibility(sk, res.Agents)
+		sk.Visibility = skillVisibility(absCwd, sk, res.Agents, projectVisibility, globalVisibility, &res)
 		res.Skills = append(res.Skills, sk)
 	}
 	sort.Slice(res.Skills, func(i, j int) bool {
@@ -85,6 +87,23 @@ func Run(cwd string) (model.ScanResult, error) {
 		return left < right
 	})
 	return res, nil
+}
+
+func readVisibilityStates(cwd string, res *model.ScanResult) (*visibility.VisibilityState, *visibility.VisibilityState) {
+	projectState, err := visibility.ReadState(visibility.ProjectStatePath(cwd))
+	if err != nil {
+		res.HealthIssues = append(res.HealthIssues, model.HealthIssue{Type: "corrupt_visibility_state", Severity: "warning", Message: err.Error(), Path: visibility.ProjectStatePath(cwd)})
+	}
+	globalPath, pathErr := visibility.GlobalStatePath()
+	if pathErr != nil {
+		res.HealthIssues = append(res.HealthIssues, model.HealthIssue{Type: "visibility_state_unavailable", Severity: "warning", Message: pathErr.Error()})
+		return projectState, visibility.NewVisibilityState()
+	}
+	globalState, err := visibility.ReadState(globalPath)
+	if err != nil {
+		res.HealthIssues = append(res.HealthIssues, model.HealthIssue{Type: "corrupt_visibility_state", Severity: "warning", Message: err.Error(), Path: globalPath})
+	}
+	return projectState, globalState
 }
 
 func hasNonCanonicalObservation(sk *model.Skill) bool {
@@ -126,7 +145,7 @@ func pathExists(path string) bool {
 	return err == nil
 }
 
-func skillVisibility(sk *model.Skill, states []model.AgentState) []model.SkillVisibility {
+func skillVisibility(cwd string, sk *model.Skill, states []model.AgentState, projectVisibility, globalVisibility *visibility.VisibilityState, res *model.ScanResult) []model.SkillVisibility {
 	visibility := make([]model.SkillVisibility, 0, len(states))
 	for _, state := range states {
 		item := model.SkillVisibility{Agent: state.Name, Display: state.Display}
@@ -150,24 +169,111 @@ func skillVisibility(sk *model.Skill, states []model.AgentState) []model.SkillVi
 			default:
 				item.Reason = "visible"
 			}
+			if disabledEntry, _, disabled := disabledEntryForSkill(sk, state.Name, projectVisibility, globalVisibility); disabled {
+				if reason, ok := reconcileDisabledEntry(cwd, sk, state.Name, disabledEntry, res); ok && reason != "" {
+					item.Reason = reason
+					item.Visible = true
+					item.Path = firstNonEmpty(item.Path, disabledEntry.MutatedPath)
+				}
+			}
 			visibility = append(visibility, item)
 			continue
 		}
 
 		item.Visible = false
-		switch {
-		case sk.Scope == model.ScopeGlobal && !state.SupportsGlobal:
-			item.Reason = "unsupported_global"
-		case !state.Detected:
-			item.Reason = "agent_not_detected"
-		case state.Universal:
-			item.Reason = "not_in_universal_canonical_dir"
-		default:
-			item.Reason = "missing_agent_link"
+		if disabledEntry, _, disabled := disabledEntryForSkill(sk, state.Name, projectVisibility, globalVisibility); disabled {
+			if reason, ok := reconcileDisabledEntry(cwd, sk, state.Name, disabledEntry, res); ok && (reason == "disabled_by_lazyskills" || reason == "disabled_pending_finalize") {
+				item.Reason = "disabled_by_lazyskills"
+				item.Path = disabledEntry.MutatedPath
+				item.Status = disabledEntry.ObservedStatus
+			} else {
+				applyDefaultVisibilityReason(sk, state, &item)
+			}
+		} else {
+			applyDefaultVisibilityReason(sk, state, &item)
 		}
 		visibility = append(visibility, item)
 	}
 	return visibility
+}
+
+func applyDefaultVisibilityReason(sk *model.Skill, state model.AgentState, item *model.SkillVisibility) {
+	switch {
+	case sk.Scope == model.ScopeGlobal && !state.SupportsGlobal:
+		item.Reason = "unsupported_global"
+	case !state.Detected:
+		item.Reason = "agent_not_detected"
+	case state.Universal:
+		item.Reason = "not_in_universal_canonical_dir"
+	default:
+		item.Reason = "missing_agent_link"
+	}
+}
+
+func reconcileDisabledEntry(cwd string, sk *model.Skill, agent string, entry visibility.DisabledEntry, res *model.ScanResult) (string, bool) {
+	if entry.ObservedStatus != model.StatusSymlink {
+		addVisibilityHealth(res, "invalid_visibility_state", "disabled entry is not symlink-backed", entry.MutatedPath)
+		return "", false
+	}
+	if err := visibility.ValidateEntryPath(cwd, entry); err != nil {
+		addVisibilityHealth(res, "invalid_visibility_state", err.Error(), entry.MutatedPath)
+		return "", false
+	}
+	exists, err := visibility.EntryPathExists(entry)
+	if err != nil {
+		addVisibilityHealth(res, "visibility_state_conflict", err.Error(), entry.MutatedPath)
+		return "", false
+	}
+	switch entry.State {
+	case visibility.StateActive:
+		if exists {
+			addVisibilityHealth(res, "stale_visibility_state", fmt.Sprintf("disabled entry for %s/%s exists but the skill path is present", agent, sk.Name), entry.MutatedPath)
+			return "disabled_state_conflict", true
+		}
+		return "disabled_by_lazyskills", true
+	case visibility.StatePendingDisable:
+		if exists {
+			addVisibilityHealth(res, "pending_visibility_state", fmt.Sprintf("pending disable for %s/%s did not remove the skill path", agent, sk.Name), entry.MutatedPath)
+			return "pending_disable", true
+		}
+		addVisibilityHealth(res, "pending_visibility_state", fmt.Sprintf("pending disable for %s/%s removed the path but was not finalized", agent, sk.Name), entry.MutatedPath)
+		return "disabled_pending_finalize", true
+	case visibility.StatePendingEnable, visibility.StateConflict:
+		addVisibilityHealth(res, "visibility_state_conflict", fmt.Sprintf("disabled entry for %s/%s has state %s", agent, sk.Name, entry.State), entry.MutatedPath)
+		return "", false
+	default:
+		addVisibilityHealth(res, "invalid_visibility_state", fmt.Sprintf("disabled entry for %s/%s has unknown state %s", agent, sk.Name, entry.State), entry.MutatedPath)
+		return "", false
+	}
+}
+
+func addVisibilityHealth(res *model.ScanResult, issueType, message, path string) {
+	if res == nil {
+		return
+	}
+	for _, existing := range res.HealthIssues {
+		if existing.Type == issueType && existing.Message == message && existing.Path == path {
+			return
+		}
+	}
+	res.HealthIssues = append(res.HealthIssues, model.HealthIssue{Type: issueType, Severity: "warning", Message: message, Path: path})
+}
+
+func disabledEntryForSkill(sk *model.Skill, agent string, projectVisibility, globalVisibility *visibility.VisibilityState) (visibility.DisabledEntry, string, bool) {
+	state := projectVisibility
+	if sk.Scope == model.ScopeGlobal {
+		state = globalVisibility
+	}
+	return visibility.FindEntryForSkill(state, sk, agent, sk.Scope)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func observedForAgent(sk *model.Skill, agent string) (model.ObservedPath, bool) {

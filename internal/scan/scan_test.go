@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"lazyskills/internal/model"
+	"lazyskills/internal/visibility"
 )
 
 func writeSkill(t *testing.T, dir, name, desc string) {
@@ -84,6 +85,159 @@ func TestClaudeProjectDir(t *testing.T) {
 	if got := res.Skills[0].ObservedPaths[0].Agent; got != "claude-code" {
 		t.Fatalf("expected claude-code observation, got %s", got)
 	}
+}
+
+func TestDisabledProjectSkillVisibilityReason(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+	localLock := `{"version":1,"skills":{"Deploy":{"source":"owner/repo","sourceType":"github","computedHash":"abc"}}}`
+	if err := os.WriteFile(filepath.Join(cwd, "skills-lock.json"), []byte(localLock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mutated := filepath.Join(cwd, ".claude", "skills", "deploy")
+	state := visibility.NewVisibilityState()
+	state.Skills[visibility.StateKey(model.ScopeProject, "claude-code", "deploy", "", mutated)] = visibility.DisabledEntry{Version: 1, Scope: model.ScopeProject, Agent: "claude-code", SkillDisplayName: "Deploy", NormalizedSkillName: "deploy", LockIdentity: visibility.LockIdentity{Source: "owner/repo", SourceType: "github", ComputedHash: "abc"}, MutatedPath: mutated, ObservedStatus: model.StatusSymlink, State: visibility.StateActive}
+	if err := visibility.WriteState(visibility.ProjectStatePath(cwd), state); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, sk := range res.Skills {
+		if sk.Name != "Deploy" || sk.Scope != model.ScopeProject {
+			continue
+		}
+		for _, v := range sk.Visibility {
+			if v.Agent == "claude-code" {
+				found = true
+				if v.Visible || v.Reason != "disabled_by_lazyskills" || v.Path != mutated {
+					t.Fatalf("unexpected claude visibility: %#v", v)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected disabled claude-code visibility in %#v", res.Skills)
+	}
+}
+
+func TestDisabledProjectSkillMatchesLockWhenNameDiffers(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+	localLock := `{"version":1,"skills":{"deploy-folder":{"source":"owner/repo","sourceType":"github","computedHash":"abc"}}}`
+	if err := os.WriteFile(filepath.Join(cwd, "skills-lock.json"), []byte(localLock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mutated := filepath.Join(cwd, ".claude", "skills", "deploy-folder")
+	state := visibility.NewVisibilityState()
+	state.Skills[visibility.StateKey(model.ScopeProject, "claude-code", "pretty-deploy", "", mutated)] = visibility.DisabledEntry{Version: 1, Scope: model.ScopeProject, Agent: "claude-code", SkillDisplayName: "Pretty Deploy", NormalizedSkillName: "pretty-deploy", LockIdentity: visibility.LockIdentity{Source: "owner/repo", SourceType: "github", ComputedHash: "abc"}, MutatedPath: mutated, ObservedStatus: model.StatusSymlink, State: visibility.StateActive}
+	if err := visibility.WriteState(visibility.ProjectStatePath(cwd), state); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sk := range res.Skills {
+		if sk.Name == "deploy-folder" {
+			for _, v := range sk.Visibility {
+				if v.Agent == "claude-code" && v.Reason == "disabled_by_lazyskills" {
+					return
+				}
+			}
+		}
+	}
+	t.Fatalf("expected disabled state matched by lock identity, got %#v", res.Skills)
+}
+
+func TestUnsafeDisabledStateIgnoredByScan(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+	localLock := `{"version":1,"skills":{"Deploy":{"source":"owner/repo","sourceType":"github","computedHash":"abc"}}}`
+	if err := os.WriteFile(filepath.Join(cwd, "skills-lock.json"), []byte(localLock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := visibility.NewVisibilityState()
+	state.Skills[visibility.StateKey(model.ScopeProject, "claude-code", "deploy", "", "/tmp/outside")] = visibility.DisabledEntry{Version: 1, Scope: model.ScopeProject, Agent: "claude-code", SkillDisplayName: "Deploy", NormalizedSkillName: "deploy", LockIdentity: visibility.LockIdentity{Source: "owner/repo", SourceType: "github", ComputedHash: "abc"}, MutatedPath: "/tmp/outside", ObservedStatus: model.StatusSymlink, State: visibility.StateActive}
+	if err := visibility.WriteState(visibility.ProjectStatePath(cwd), state); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sk := range res.Skills {
+		for _, v := range sk.Visibility {
+			if v.Agent == "claude-code" && v.Reason == "disabled_by_lazyskills" {
+				t.Fatalf("unsafe state should not be reported disabled: %#v", v)
+			}
+		}
+	}
+	for _, issue := range res.HealthIssues {
+		if issue.Type == "invalid_visibility_state" {
+			return
+		}
+	}
+	t.Fatalf("expected invalid visibility state issue, got %#v", res.HealthIssues)
+}
+
+func TestStaleDisabledStateWithVisiblePathReportsConflict(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+	canonical := filepath.Join(cwd, ".agents", "skills", "deploy")
+	mutated := filepath.Join(cwd, ".claude", "skills", "deploy")
+	writeSkill(t, canonical, "Deploy", "desc")
+	if err := os.MkdirAll(filepath.Dir(mutated), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(canonical, mutated); err != nil {
+		t.Fatal(err)
+	}
+	localLock := `{"version":1,"skills":{"Deploy":{"source":"owner/repo","sourceType":"github","computedHash":"abc"}}}`
+	if err := os.WriteFile(filepath.Join(cwd, "skills-lock.json"), []byte(localLock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := visibility.NewVisibilityState()
+	state.Skills[visibility.StateKey(model.ScopeProject, "claude-code", "deploy", canonical, mutated)] = visibility.DisabledEntry{Version: 1, Scope: model.ScopeProject, Agent: "claude-code", SkillDisplayName: "Deploy", NormalizedSkillName: "deploy", LockIdentity: visibility.LockIdentity{Source: "owner/repo", SourceType: "github", ComputedHash: "abc"}, CanonicalPath: canonical, MutatedPath: mutated, ObservedStatus: model.StatusSymlink, State: visibility.StateActive}
+	if err := visibility.WriteState(visibility.ProjectStatePath(cwd), state); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sk := range res.Skills {
+		for _, v := range sk.Visibility {
+			if v.Agent == "claude-code" && v.Reason == "disabled_state_conflict" && v.Visible {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected visible conflict for stale disabled state, got %#v", res.Skills)
+}
+
+func TestCorruptVisibilityStateAddsHealthIssue(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(visibility.ProjectStatePath(cwd)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(visibility.ProjectStatePath(cwd), []byte("{bad-json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, issue := range res.HealthIssues {
+		if issue.Type == "corrupt_visibility_state" {
+			return
+		}
+	}
+	t.Fatalf("expected corrupt visibility health issue, got %#v", res.HealthIssues)
 }
 
 func TestLocksCorrelateBySkillName(t *testing.T) {

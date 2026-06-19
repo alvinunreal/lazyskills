@@ -1,10 +1,13 @@
 package actions
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"lazyskills/internal/model"
+	"lazyskills/internal/visibility"
 )
 
 func TestForSkillBuildsStructuredSanitizedCommandPreviews(t *testing.T) {
@@ -206,6 +209,67 @@ func TestGlobalWithSkillPathPrefersSourceForSubpath(t *testing.T) {
 	}
 	if !strings.Contains(add.Command, "owner/repo/skills/deploy#v1") {
 		t.Fatalf("expected source with appended skill folder and ref, got %q", add.Command)
+	}
+}
+
+func TestDisableActionRequiresActiveAgent(t *testing.T) {
+	cwd := t.TempDir()
+	sk := &model.Skill{Name: "Deploy", Scope: model.ScopeProject, CanonicalPath: filepath.Join(cwd, ".agents", "skills", "deploy"), ObservedPaths: []model.ObservedPath{{Agent: "claude-code", Scope: model.ScopeProject, Path: filepath.Join(cwd, ".claude", "skills", "deploy"), Status: model.StatusSymlink}}}
+	disable := previewByTitle(t, ForSkillWithContext(sk, ActionContext{Cwd: cwd}, nil), "Disable selected skill")
+	if disable.Available || !strings.Contains(disable.Reason, "choose an agent") {
+		t.Fatalf("expected disable unavailable without active agent, got %#v", disable)
+	}
+}
+
+func TestDisableActionAvailableForActiveAgentSymlink(t *testing.T) {
+	cwd := t.TempDir()
+	sk := &model.Skill{Name: "Deploy", Scope: model.ScopeProject, CanonicalPath: filepath.Join(cwd, ".agents", "skills", "deploy"), LocalLock: &model.LocalLockEntry{Source: "owner/repo"}, ObservedPaths: []model.ObservedPath{{Agent: "claude-code", Scope: model.ScopeProject, Path: filepath.Join(cwd, ".claude", "skills", "deploy"), Status: model.StatusSymlink}}}
+	disable := previewByTitle(t, ForSkillWithContext(sk, ActionContext{Cwd: cwd, ActiveAgent: "claude-code", DisabledState: visibility.NewVisibilityState()}, nil), "Disable for claude-code")
+	if !disable.Available || disable.Exec.Internal != "disable_skill" || !strings.Contains(disable.Command, "lazyskills disable --agent claude-code") {
+		t.Fatalf("expected available disable action, got %#v", disable)
+	}
+}
+
+func TestEnableActionAvailableWhenDisabledStateExists(t *testing.T) {
+	cwd := t.TempDir()
+	canonical := filepath.Join(cwd, ".agents", "skills", "deploy")
+	mutated := filepath.Join(cwd, ".claude", "skills", "deploy")
+	if err := os.MkdirAll(canonical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sk := &model.Skill{Name: "Deploy", Scope: model.ScopeProject, CanonicalPath: canonical}
+	state := visibility.NewVisibilityState()
+	state.Skills[visibility.StateKey(model.ScopeProject, "claude-code", "deploy", canonical, mutated)] = visibility.DisabledEntry{Version: 1, Scope: model.ScopeProject, Agent: "claude-code", SkillDisplayName: "Deploy", NormalizedSkillName: "deploy", CanonicalPath: canonical, MutatedPath: mutated, ObservedStatus: model.StatusSymlink, RawSymlinkTarget: canonical, State: visibility.StateActive}
+	enable := previewByTitle(t, ForSkillWithContext(sk, ActionContext{Cwd: cwd, ActiveAgent: "claude-code", DisabledState: state}, nil), "Enable for claude-code")
+	if !enable.Available || enable.Exec.Internal != "enable_skill" || !strings.Contains(enable.Command, "lazyskills enable --agent claude-code") {
+		t.Fatalf("expected available enable action, got %#v", enable)
+	}
+}
+
+func TestStaleDisabledStateDoesNotOfferEnableButAllowsDisableRetry(t *testing.T) {
+	cwd := t.TempDir()
+	canonical := filepath.Join(cwd, ".agents", "skills", "deploy")
+	mutated := filepath.Join(cwd, ".claude", "skills", "deploy")
+	if err := os.MkdirAll(canonical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(mutated), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(canonical, mutated); err != nil {
+		t.Fatal(err)
+	}
+	sk := &model.Skill{Name: "Deploy", Scope: model.ScopeProject, CanonicalPath: canonical, LocalLock: &model.LocalLockEntry{Source: "owner/repo"}, ObservedPaths: []model.ObservedPath{{Agent: "claude-code", Scope: model.ScopeProject, Path: mutated, Status: model.StatusSymlink}}}
+	state := visibility.NewVisibilityState()
+	state.Skills[visibility.StateKey(model.ScopeProject, "claude-code", "deploy", canonical, mutated)] = visibility.DisabledEntry{Version: 1, Scope: model.ScopeProject, Agent: "claude-code", SkillDisplayName: "Deploy", NormalizedSkillName: "deploy", LockIdentity: visibility.LockIdentity{Source: "owner/repo"}, CanonicalPath: canonical, MutatedPath: mutated, ObservedStatus: model.StatusSymlink, RawSymlinkTarget: canonical, State: visibility.StateActive}
+	previews := ForSkillWithContext(sk, ActionContext{Cwd: cwd, ActiveAgent: "claude-code", DisabledState: state}, nil)
+	enable := previewByTitle(t, previews, "Enable selected skill")
+	if enable.Available || !strings.Contains(enable.Reason, "already exists") {
+		t.Fatalf("expected stale enable unavailable, got %#v", enable)
+	}
+	disable := previewByTitle(t, previews, "Disable for claude-code")
+	if !disable.Available {
+		t.Fatalf("expected stale state to allow disable retry, got %#v", disable)
 	}
 }
 

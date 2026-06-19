@@ -18,6 +18,7 @@ import (
 	"lazyskills/internal/model"
 	"lazyskills/internal/runner"
 	"lazyskills/internal/scan"
+	"lazyskills/internal/visibility"
 )
 
 type scopeFilter int
@@ -358,7 +359,23 @@ func (m appModel) currentActions() []actions.CommandPreview {
 	if len(items) == 0 || m.selected >= len(items) {
 		return nil
 	}
-	return actions.ForSkill(items[m.selected])
+	return actions.ForSkillWithContext(items[m.selected], m.actionContext(items[m.selected]), nil)
+}
+
+func (m appModel) actionContext(sk *model.Skill) actions.ActionContext {
+	ctx := actions.ActionContext{Cwd: m.cwd, ActiveAgent: m.agent}
+	if sk == nil || m.agent == "" {
+		return ctx
+	}
+	statePath, err := visibility.StatePath(m.cwd, sk.Scope)
+	if err != nil {
+		return ctx
+	}
+	state, err := visibility.ReadState(statePath)
+	if err == nil {
+		ctx.DisabledState = state
+	}
+	return ctx
 }
 
 func (m appModel) startAction() (tea.Model, tea.Cmd) {
@@ -450,6 +467,36 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 	if action.Exec.Internal == "refresh" {
 		m.actionResult = nil
 		return m, loadSnapshot(m.cwd)
+	}
+	if action.Exec.Internal == "disable_skill" || action.Exec.Internal == "enable_skill" {
+		items := m.filteredSkills()
+		if len(items) == 0 || m.selected >= len(items) {
+			return m, nil
+		}
+		skill := items[m.selected]
+		agent := m.agent
+		internal := action.Exec.Internal
+		m.running = true
+		m.runningTitle = action.Title
+		m.actionResult = nil
+		m.confirming = false
+		m.confirmInput = ""
+		m.confirmError = ""
+		m.syncViewport()
+		return m, func() tea.Msg {
+			result := runner.Result{Program: "lazyskills", Args: []string{strings.TrimSuffix(internal, "_skill"), "--agent", agent, skill.Name}, Cwd: m.cwd, ExitCode: 0}
+			var err error
+			if internal == "disable_skill" {
+				err = visibility.Disable(m.cwd, skill, agent, skill.Scope)
+			} else {
+				err = visibility.Enable(m.cwd, skill, agent, skill.Scope)
+			}
+			if err != nil {
+				result.ExitCode = -1
+				result.Err = err.Error()
+			}
+			return actionResultMsg{result: result, mutates: action.Mutates}
+		}
 	}
 	if action.Exec.Interactive {
 		cmd := exec.Command(action.Exec.Program, action.Exec.Args...)

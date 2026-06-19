@@ -9,6 +9,7 @@ import (
 
 	"lazyskills/internal/compat"
 	"lazyskills/internal/model"
+	"lazyskills/internal/visibility"
 )
 
 type CommandPreview struct {
@@ -38,8 +39,14 @@ type ExecSpec struct {
 
 type SkillsResolver func() (program string, baseArgs []string)
 
+type ActionContext struct {
+	Cwd           string
+	ActiveAgent   string
+	DisabledState *visibility.VisibilityState
+}
+
 func ForSkill(sk *model.Skill) []CommandPreview {
-	return ForSkillWithResolver(sk, ResolveSkillsCommand)
+	return ForSkillWithContext(sk, ActionContext{}, ResolveSkillsCommand)
 }
 
 func ForSkills(skills []*model.Skill) []CommandPreview {
@@ -93,6 +100,10 @@ func bulkBatch(skills []*model.Skill, resolve SkillsResolver, actionID string) (
 }
 
 func ForSkillWithResolver(sk *model.Skill, resolve SkillsResolver) []CommandPreview {
+	return ForSkillWithContext(sk, ActionContext{}, resolve)
+}
+
+func ForSkillWithContext(sk *model.Skill, ctx ActionContext, resolve SkillsResolver) []CommandPreview {
 	if sk == nil {
 		return nil
 	}
@@ -130,7 +141,88 @@ func ForSkillWithResolver(sk *model.Skill, resolve SkillsResolver) []CommandPrev
 	} else {
 		previews = append(previews, unavailablePreview("Remove selected skill", reason))
 	}
+
+	if enable, ok, reason := enableAction(sk, ctx); ok {
+		previews = append(previews, enable)
+	} else {
+		previews = append(previews, unavailablePreview("Enable selected skill", reason))
+	}
+	if disable, ok, reason := disableAction(sk, ctx); ok {
+		previews = append(previews, disable)
+	} else {
+		previews = append(previews, unavailablePreview("Disable selected skill", reason))
+	}
 	return previews
+}
+
+func enableAction(sk *model.Skill, ctx ActionContext) (CommandPreview, bool, string) {
+	if ctx.ActiveAgent == "" {
+		return CommandPreview{}, false, "choose an agent first"
+	}
+	if ctx.DisabledState == nil {
+		return CommandPreview{}, false, "visibility state is unavailable"
+	}
+	entry, _, ok := visibility.FindEntryForSkill(ctx.DisabledState, sk, ctx.ActiveAgent, sk.Scope)
+	if !ok {
+		return CommandPreview{}, false, "skill is not disabled for the active agent"
+	}
+	if err := visibility.EntryCanEnable(ctx.Cwd, entry); err != nil {
+		return CommandPreview{}, false, err.Error()
+	}
+	command := fmt.Sprintf("lazyskills enable --agent %s %s", ctx.ActiveAgent, compat.SanitizeMetadata(sk.Name))
+	return CommandPreview{ID: "enable_skill", Title: fmt.Sprintf("Enable for %s", ctx.ActiveAgent), Exec: ExecSpec{Internal: "enable_skill"}, Command: command, Description: "Restore this skill so the selected agent can see it again.", Mutates: true, RequiresConfirm: false, Available: true}, true, ""
+}
+
+func disableAction(sk *model.Skill, ctx ActionContext) (CommandPreview, bool, string) {
+	if ctx.ActiveAgent == "" {
+		return CommandPreview{}, false, "choose an agent first"
+	}
+	if ctx.DisabledState != nil {
+		if entry, _, ok := visibility.FindEntryForSkill(ctx.DisabledState, sk, ctx.ActiveAgent, sk.Scope); ok {
+			exists, _ := visibility.EntryPathExists(entry)
+			if exists {
+				// Stale state: the path is visible again, so allow a fresh Disable attempt.
+			} else {
+				return CommandPreview{}, false, "skill is already disabled for the active agent"
+			}
+		}
+	}
+	observed, ok := observedForAgentScope(sk, ctx.ActiveAgent, sk.Scope)
+	if !ok {
+		return CommandPreview{}, false, "skill has no visible path for the active agent"
+	}
+	if observed.Status != model.StatusSymlink {
+		return CommandPreview{}, false, "disable only supports agent-specific symlink installs"
+	}
+	if ctx.Cwd == "" {
+		return CommandPreview{}, false, "current working directory is unavailable"
+	}
+	if sharing, err := visibility.SharedDirectoryAgents(ctx.ActiveAgent, sk.Scope, ctx.Cwd); err != nil {
+		return CommandPreview{}, false, err.Error()
+	} else if len(sharing) > 0 {
+		return CommandPreview{}, false, fmt.Sprintf("agent shares this skills directory with %s", strings.Join(sharing, ", "))
+	}
+	agent, err := visibility.ResolveAgent(ctx.ActiveAgent, ctx.Cwd)
+	if err != nil {
+		return CommandPreview{}, false, err.Error()
+	}
+	if err := visibility.ValidatePath(observed.Path, agent, sk.Scope, ctx.Cwd); err != nil {
+		return CommandPreview{}, false, err.Error()
+	}
+	if sk.LocalLock == nil && sk.GlobalLock == nil && sk.CanonicalPath == "" {
+		return CommandPreview{}, false, "skill needs lock or canonical identity to be restorable"
+	}
+	command := fmt.Sprintf("lazyskills disable --agent %s %s", ctx.ActiveAgent, compat.SanitizeMetadata(sk.Name))
+	return CommandPreview{ID: "disable_skill", Title: fmt.Sprintf("Disable for %s", ctx.ActiveAgent), Exec: ExecSpec{Internal: "disable_skill"}, Command: command, Description: "Disable this skill so the selected agent can no longer see it.", Mutates: true, RequiresConfirm: true, ConfirmValue: "disable", Available: true}, true, ""
+}
+
+func observedForAgentScope(sk *model.Skill, agent string, scope model.Scope) (model.ObservedPath, bool) {
+	for _, observed := range sk.ObservedPaths {
+		if observed.Agent == agent && observed.Scope == scope {
+			return observed, true
+		}
+	}
+	return model.ObservedPath{}, false
 }
 
 func openEditorAction(sk *model.Skill) (CommandPreview, bool, string) {

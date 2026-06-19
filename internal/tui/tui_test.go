@@ -3,6 +3,8 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -469,6 +471,50 @@ func TestDirectRemoveHotkeyStartsStrictConfirmation(t *testing.T) {
 	next := updated.(appModel)
 	if cmd != nil || next.commands || !next.confirming || next.currentActions()[next.action].ID != "remove" || next.currentActions()[next.action].ConfirmValue != "deploy-skill" {
 		t.Fatalf("expected x to open single remove confirmation without actions, action=%#v confirming=%v commands=%v cmd=%v", next.currentActions()[next.action], next.confirming, next.commands, cmd)
+	}
+}
+
+func TestInternalDisableActionRemovesAgentSymlinkAndRescans(t *testing.T) {
+	cwd := t.TempDir()
+	canonical := filepath.Join(cwd, ".agents", "skills", "deploy")
+	agentDir := filepath.Join(cwd, ".claude", "skills")
+	if err := os.MkdirAll(canonical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mutated := filepath.Join(agentDir, "deploy")
+	if err := os.Symlink(canonical, mutated); err != nil {
+		t.Fatal(err)
+	}
+	m := appModel{cwd: cwd, width: 120, height: 32, commands: true, agent: "claude-code", result: model.ScanResult{Skills: []*model.Skill{{
+		Name:          "Deploy",
+		Scope:         model.ScopeProject,
+		CanonicalPath: canonical,
+		LocalLock:     &model.LocalLockEntry{Source: "owner/repo"},
+		ObservedPaths: []model.ObservedPath{{Path: mutated, Scope: model.ScopeProject, Agent: "claude-code", Status: model.StatusSymlink, TargetPath: canonical}},
+	}}}}
+	m.action = actionIndex(t, m, "Disable for claude-code")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	for _, r := range []rune("disable") {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(appModel)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	if cmd == nil || !m.running {
+		t.Fatalf("expected internal disable command to run, running=%v cmd=%v", m.running, cmd)
+	}
+	msg := cmd()
+	updated, rescan := m.Update(msg)
+	m = updated.(appModel)
+	if m.actionResult == nil || m.actionResult.ExitCode != 0 || rescan == nil {
+		t.Fatalf("expected successful disable result and rescan, result=%#v rescan=%v", m.actionResult, rescan)
+	}
+	if _, err := os.Lstat(mutated); !os.IsNotExist(err) {
+		t.Fatalf("expected agent symlink removed, lstat err=%v", err)
 	}
 }
 
