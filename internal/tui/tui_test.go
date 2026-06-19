@@ -561,6 +561,40 @@ func TestSkillListSeparatesNoSourceMetadata(t *testing.T) {
 	}
 }
 
+func TestLeftRightJumpSourceGroupsWithoutChangingScope(t *testing.T) {
+	m := appModel{width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{
+		{Name: "One", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/one"}},
+		{Name: "Two", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/one"}},
+		{Name: "Three", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/two"}},
+		{Name: "Manual", Scope: model.ScopeProject},
+	}}}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	next := updated.(appModel)
+	if next.filter != scopeAll || next.selected != 2 {
+		t.Fatalf("expected right arrow to jump to next source group without changing scope, filter=%d selected=%d", next.filter, next.selected)
+	}
+
+	updated, _ = next.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	next = updated.(appModel)
+	if next.filter != scopeAll || next.selected != 0 {
+		t.Fatalf("expected left arrow to jump to previous source group without changing scope, filter=%d selected=%d", next.filter, next.selected)
+	}
+}
+
+func TestTabChangesScopeFilter(t *testing.T) {
+	m := appModel{width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{
+		{Name: "Project", Scope: model.ScopeProject},
+		{Name: "Global", Scope: model.ScopeGlobal},
+	}}}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	next := updated.(appModel)
+	if next.filter != scopeProject {
+		t.Fatalf("expected tab to switch to project scope, got %d", next.filter)
+	}
+}
+
 func TestGroupedListKeepsSelectedRowVisible(t *testing.T) {
 	skills := []*model.Skill{}
 	for i := 0; i < 12; i++ {

@@ -287,16 +287,20 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.action = 0
 			m.actionResult = nil
 			m.viewport.GotoTop()
-		case "tab", "right", "l":
+		case "tab":
 			m.filter = (m.filter + 1) % 3
 			m.selected = 0
 			m.actionResult = nil
 			m.viewport.GotoTop()
-		case "shift+tab", "left", "h":
+		case "shift+tab":
 			m.filter = (m.filter + 2) % 3
 			m.selected = 0
 			m.actionResult = nil
 			m.viewport.GotoTop()
+		case "right", "l":
+			m.jumpSourceGroup(1)
+		case "left", "h":
+			m.jumpSourceGroup(-1)
 		case "down", "j":
 			if m.commands {
 				m.action++
@@ -580,6 +584,45 @@ func (m *appModel) selectCurrentSourceGroup() {
 	if !changed && len(m.selectedKeys) == 0 {
 		m.selectedKeys = nil
 	}
+}
+
+func (m *appModel) jumpSourceGroup(direction int) {
+	items := m.filteredSkills()
+	if len(items) == 0 || direction == 0 {
+		return
+	}
+	m.clampSelection()
+	starts := sourceGroupStartIndexes(items)
+	if len(starts) <= 1 {
+		return
+	}
+	currentGroup := 0
+	for i, start := range starts {
+		if start <= m.selected {
+			currentGroup = i
+		}
+	}
+	if direction > 0 {
+		currentGroup = (currentGroup + 1) % len(starts)
+	} else {
+		currentGroup = (currentGroup + len(starts) - 1) % len(starts)
+	}
+	m.selected = starts[currentGroup]
+	m.actionResult = nil
+	m.viewport.GotoTop()
+}
+
+func sourceGroupStartIndexes(items []*model.Skill) []int {
+	starts := []int{}
+	previousGroup := ""
+	for i, skill := range items {
+		group := listGroupLabel(skill)
+		if i == 0 || group != previousGroup {
+			starts = append(starts, i)
+			previousGroup = group
+		}
+	}
+	return starts
 }
 
 func (m appModel) isSelected(skill *model.Skill) bool {
