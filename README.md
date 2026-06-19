@@ -35,6 +35,8 @@ It is designed to complement the official `skills` CLI, not replace it.
 
 There are Lazy Skills stickers. Star the repo and you're entered into a draw to win some, shipped worldwide at no cost to you.
 
+Winners are drawn from stargazers and announced in the [sticker giveaway issue](https://github.com/alvinunreal/lazyskills/issues/2), tagged by their GitHub username, so you'll get a notification if it's you. Shipping details are arranged privately from there.
+
 ## ✨ Features
 
 ✅ Fast, keyboard-driven Bubble Tea TUI  
