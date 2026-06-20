@@ -1236,17 +1236,20 @@ func (m appModel) confirmationOverlay(layout appLayout) string {
 	phrase := ""
 	command := ""
 	dangerous := false
+	exact := false
 	if m.pendingAction != nil {
 		title = compat.SanitizeMetadata(m.pendingAction.Title)
 		phrase = compat.SanitizeMetadata(m.pendingAction.ConfirmValue)
 		command = compat.SanitizeMetadata(m.pendingAction.Command)
 		dangerous = m.pendingAction.Dangerous
+		exact = requiresExactConfirmation(*m.pendingAction)
 	} else if acts := m.currentActions(); len(acts) > 0 && m.action < len(acts) {
 		action := acts[m.action]
 		title = compat.SanitizeMetadata(action.Title)
 		phrase = compat.SanitizeMetadata(action.ConfirmValue)
 		command = compat.SanitizeMetadata(action.Command)
 		dangerous = action.Dangerous
+		exact = requiresExactConfirmation(action)
 	}
 	headerStyle := sectionHeaderStyle
 	borderColor := actionBorderColor
@@ -1255,8 +1258,12 @@ func (m appModel) confirmationOverlay(layout appLayout) string {
 	if dangerous {
 		headerStyle = errorStyle.Bold(true)
 		borderColor = lipgloss.Color("203")
-		placeholder = phrase
-		instruction = fmt.Sprintf("Type %q to confirm, or Esc to cancel.", phrase)
+		placeholder = "y / yes"
+		instruction = "Type y or yes to confirm, or Esc to cancel."
+		if exact {
+			placeholder = phrase
+			instruction = fmt.Sprintf("Type %q to confirm, or Esc to cancel.", phrase)
+		}
 	}
 	lines := []string{
 		headerStyle.Render(title),

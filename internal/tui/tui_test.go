@@ -1070,7 +1070,7 @@ func TestFailedMutationDoesNotTriggerRescan(t *testing.T) {
 	}
 }
 
-func TestRemoveRequiresExactTypedIdentity(t *testing.T) {
+func TestSingleRemoveRequiresYesConfirmation(t *testing.T) {
 	m := actionTestModel(t.TempDir())
 	m.result.Skills[0].CanonicalPath = "/tmp/deploy-skill"
 	m.commands = true
@@ -1083,12 +1083,12 @@ func TestRemoveRequiresExactTypedIdentity(t *testing.T) {
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(appModel)
-	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, `Type "deploy-skill" exactly`) || m.actionResult != nil {
+	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, "Type y or yes") || m.actionResult != nil {
 		t.Fatalf("expected inline confirmation error without command, confirming=%v err=%q result=%#v cmd=%v", m.confirming, m.confirmError, m.actionResult, cmd)
 	}
 }
 
-func TestDangerousConfirmationRejectsYesAndAcceptsExactPhrase(t *testing.T) {
+func TestSingleRemoveAcceptsYesConfirmation(t *testing.T) {
 	old := runExec
 	runExec = func(spec runner.ExecSpec) runner.Result {
 		return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
@@ -1106,18 +1106,26 @@ func TestDangerousConfirmationRejectsYesAndAcceptsExactPhrase(t *testing.T) {
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(appModel)
-	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, `Type "deploy-skill" exactly`) {
-		t.Fatalf("expected yes to be rejected for dangerous confirmation, confirming=%v err=%q cmd=%v", m.confirming, m.confirmError, cmd)
+	if cmd == nil || !m.running {
+		t.Fatalf("expected yes to run single remove, running=%v cmd=%v", m.running, cmd)
 	}
+}
 
-	for _, r := range []rune("deploy-skill") {
+func TestBulkRemoveRequiresExactPhrase(t *testing.T) {
+	m := bulkActionTestModel(t.TempDir())
+	m.selectedKeys = map[string]bool{skillKey(m.result.Skills[0]): true, skillKey(m.result.Skills[1]): true}
+	m.commands = true
+	m.action = actionIndex(t, m, "Remove 2 selected skills")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	for _, r := range []rune("yes") {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		m = updated.(appModel)
 	}
-	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(appModel)
-	if cmd == nil || !m.running {
-		t.Fatalf("expected exact phrase to run dangerous action, running=%v cmd=%v", m.running, cmd)
+	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, `Type "remove 2 skills" exactly`) {
+		t.Fatalf("expected bulk remove to require exact phrase, confirming=%v err=%q cmd=%v", m.confirming, m.confirmError, cmd)
 	}
 }
 
@@ -1167,8 +1175,18 @@ func TestConfirmationOverlayCopyMatchesRisk(t *testing.T) {
 
 	m.action = actionIndex(t, m, "Remove selected skill")
 	dangerOut := m.confirmationOverlay(appLayout{Width: 120, Height: 32})
-	if !strings.Contains(dangerOut, `deploy-skill`) || !strings.Contains(dangerOut, `to confirm`) || strings.Contains(dangerOut, "y / yes") {
-		t.Fatalf("expected dangerous exact-phrase copy, got %q", dangerOut)
+	if !strings.Contains(dangerOut, "Type y or yes to confirm") || strings.Contains(dangerOut, `Type "deploy-skill"`) {
+		t.Fatalf("expected single-remove y/yes copy, got %q", dangerOut)
+	}
+
+	m = bulkActionTestModel(t.TempDir())
+	m.selectedKeys = map[string]bool{skillKey(m.result.Skills[0]): true, skillKey(m.result.Skills[1]): true}
+	m.commands = true
+	m.action = actionIndex(t, m, "Remove 2 selected skills")
+	m.confirming = true
+	bulkOut := m.confirmationOverlay(appLayout{Width: 120, Height: 32})
+	if !strings.Contains(bulkOut, `remove 2 skills`) || !strings.Contains(bulkOut, `to confirm`) || strings.Contains(bulkOut, "y / yes") {
+		t.Fatalf("expected bulk-remove exact-phrase copy, got %q", bulkOut)
 	}
 }
 

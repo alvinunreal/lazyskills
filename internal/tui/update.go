@@ -731,21 +731,28 @@ func (m appModel) confirmAction() (tea.Model, tea.Cmd) {
 }
 
 func confirmationAccepted(input string, action actions.CommandPreview) bool {
-	if action.Dangerous {
+	if requiresExactConfirmation(action) {
 		return input == action.ConfirmValue && action.ConfirmValue != ""
 	}
 	value := strings.TrimSpace(strings.ToLower(input))
 	if value == "" {
-		return true
+		return !action.Dangerous
 	}
 	return value == "y" || value == "yes" || input == action.ConfirmValue
 }
 
 func confirmationError(action actions.CommandPreview) string {
-	if action.Dangerous {
+	if requiresExactConfirmation(action) {
 		return fmt.Sprintf("Type %q exactly, or press Esc to cancel.", action.ConfirmValue)
 	}
+	if action.Dangerous {
+		return "Type y or yes to confirm, or press Esc to cancel."
+	}
 	return "Press Enter to continue, or Esc to cancel."
+}
+
+func requiresExactConfirmation(action actions.CommandPreview) bool {
+	return action.Dangerous && action.ID == "bulk_remove"
 }
 
 func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.Cmd) {
