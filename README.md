@@ -173,18 +173,23 @@ Common TUI keys:
 
 | Key | Action |
 | --- | --- |
-| `↑/↓`, `j/k` | Move selection |
+| `↑/↓`, `j/k` | Move selection (Inventory) or scroll (Metadata/Preview) |
+| `gg` / `G` | Jump to top / bottom (also `home` / `end`) |
+| `1` / `2` / `3` | Focus the Inventory / Metadata / Preview pane |
+| `tab`, `shift+tab` | Cycle focus through panes |
+| `←/→` | Jump source groups (Inventory) or switch pane focus |
+| `h/l` (`-`/`+`) | Collapse / expand the current source group |
+| `[` / `]` | Jump to previous / next source group |
+| `f` / `F` | Cycle scope filter (All/Project/Global) / reset to All |
+| `a` / `A` | Cycle agent filter / reset to all agents |
+| `/` | Search skills |
 | `space` | Mark/unmark skill for bulk actions |
 | `s` | Mark all skills from the current source/repo |
 | `o` | Open current skill in `$EDITOR` |
-| `u` | Update current skill, or marked skills if any are selected |
-| `x` | Remove current skill, or marked skills if any are selected |
-| `tab`, `shift+tab`, `←/→` | Change project/global scope filter |
-| `a` | Cycle agent filter |
-| `A` | Reset agent filter to all agents |
-| `/` | Search skills |
+| `u` / `x` | Update / remove current skill (or marked skills if any) |
 | `c` | Show guarded actions |
-| `enter` | Run selected action when actions are visible |
+| `enter` | Open detail for the selection (runs the action in the command picker) |
+| `d` | Discover available skills for the selected source |
 | `r` | Refresh scan |
 | `?` | Toggle help |
 | `q` | Quit |
