@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -42,8 +43,9 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncViewport()
 	case discoveryResultMsg:
 		disc := SourceDiscovery{
-			Status: DiscoveryReady,
-			Skills: msg.skills,
+			Status:    DiscoveryReady,
+			Skills:    msg.skills,
+			ScannedAt: time.Now(),
 		}
 		if msg.err != nil {
 			disc.Status = DiscoveryFailed

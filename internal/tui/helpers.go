@@ -3,11 +3,29 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/alvinunreal/lazyskills/internal/compat"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
 )
+
+// humanizeSince renders a coarse, git-style relative age ("just now", "5m ago").
+func humanizeSince(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < 5*time.Second:
+		return "just now"
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
 
 func wrap(s string, width int) string {
 	if width <= 8 || len(s) <= width {

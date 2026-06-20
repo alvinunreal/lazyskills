@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -766,6 +767,38 @@ func TestScopeFilterKeys(t *testing.T) {
 	next = updated.(appModel)
 	if next.filter != scopeAll {
 		t.Fatalf("expected F to reset scope to All, got %d", next.filter)
+	}
+}
+
+func TestHumanizeSince(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		at   time.Time
+		want string
+	}{
+		{now.Add(-2 * time.Second), "just now"},
+		{now.Add(-30 * time.Second), "30s ago"},
+		{now.Add(-5 * time.Minute), "5m ago"},
+		{now.Add(-3 * time.Hour), "3h ago"},
+		{now.Add(-50 * time.Hour), "2d ago"},
+	}
+	for _, c := range cases {
+		if got := humanizeSince(c.at); got != c.want {
+			t.Errorf("humanizeSince(%v) = %q, want %q", c.at, got, c.want)
+		}
+	}
+}
+
+func TestModalShowsScanFreshness(t *testing.T) {
+	m := appModel{width: 120, height: 32, modalSource: "owner/repo", detailModal: true, result: model.ScanResult{Skills: []*model.Skill{
+		{Name: "Existing", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+	}}}
+	m.discovery = map[string]SourceDiscovery{
+		"owner/repo": {Status: DiscoveryReady, ScannedAt: time.Now().Add(-5 * time.Minute)},
+	}
+	out := strings.Join(m.sourceModalDetailLines(80), "\n")
+	if !strings.Contains(out, "scanned 5m ago") {
+		t.Fatalf("expected scan freshness in modal, got %q", out)
 	}
 }
 

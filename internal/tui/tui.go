@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"time"
+
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/alvinunreal/lazyskills/internal/actions"
 	"github.com/alvinunreal/lazyskills/internal/model"
 	"github.com/alvinunreal/lazyskills/internal/runner"
 	"github.com/alvinunreal/lazyskills/internal/scan"
@@ -43,9 +46,10 @@ type DiscoveredSkill struct {
 }
 
 type SourceDiscovery struct {
-	Status DiscoveryStatus
-	Skills []DiscoveredSkill
-	Error  string
+	Status    DiscoveryStatus
+	Skills    []DiscoveredSkill
+	Error     string
+	ScannedAt time.Time
 }
 
 type appModel struct {
@@ -79,7 +83,8 @@ type appModel struct {
 	discovery        map[string]SourceDiscovery
 	modalSelected    int
 	modalSource      string
-	pendingG         bool // saw a lone "g"; a second "g" jumps to top
+	pendingG         bool                    // saw a lone "g"; a second "g" jumps to top
+	pendingAction    *actions.CommandPreview // action awaiting confirm (decoupled from selection)
 }
 
 type paneLayout struct {

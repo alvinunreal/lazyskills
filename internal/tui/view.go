@@ -725,8 +725,12 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 
 	lines = append(lines, "")
 
-	lines = append(lines, sectionHeaderStyle.Render("Available Skills:"))
+	availHeader := sectionHeaderStyle.Render("Available Skills:")
 	disc, ok := m.discovery[groupName]
+	if ok && disc.Status == DiscoveryReady && !disc.ScannedAt.IsZero() {
+		availHeader += "  " + dimStyle.Render("scanned "+humanizeSince(disc.ScannedAt))
+	}
+	lines = append(lines, availHeader)
 	_, _, isRemote := parseRemoteGitHubSource(groupName)
 	if !ok {
 		discoverable, reason := m.isSourceDiscoverable(groupName)
