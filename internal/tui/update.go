@@ -794,7 +794,8 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 				result.ExitCode = -1
 				result.Err = err.Error()
 			}
-			return actionResultMsg{result: result, mutates: action.Mutates}
+			partialSuccess := cleanupLockAfterRemove(action, m.cwd, &result)
+			return actionResultMsg{result: result, mutates: action.Mutates, partialSuccess: partialSuccess}
 		})
 	}
 	if len(action.Exec.Batch) > 0 {
@@ -820,8 +821,28 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 	m.syncViewport()
 	return m, func() tea.Msg {
 		result := runExec(spec)
-		return actionResultMsg{result: result, mutates: action.Mutates}
+		partialSuccess := cleanupLockAfterRemove(action, m.cwd, &result)
+		return actionResultMsg{result: result, mutates: action.Mutates, partialSuccess: partialSuccess}
 	}
+}
+
+func cleanupLockAfterRemove(action actions.CommandPreview, cwd string, result *runner.Result) bool {
+	if action.ID != "remove" || result == nil || result.ExitCode != 0 || result.Err != "" || action.ConfirmValue == "" {
+		return false
+	}
+	path := locks.ProjectLockPath(cwd)
+	for _, arg := range action.Exec.Args {
+		if arg == "-g" || arg == "--global" {
+			path = locks.GlobalLockPath()
+			break
+		}
+	}
+	if _, err := locks.RemoveEntryIfExists(path, action.ConfirmValue); err != nil {
+		result.ExitCode = -1
+		result.Err = "removed skill, but failed to update lock: " + compat.SanitizeMetadata(err.Error())
+		return true
+	}
+	return false
 }
 
 func (m appModel) runBatch(batch []actions.ExecSpec) (runner.Result, bool) {

@@ -39,3 +39,32 @@ func TestRemoveEntry(t *testing.T) {
 		t.Error("expected an error removing a missing key")
 	}
 }
+
+func TestRemoveEntryIfExistsIgnoresMissingFileAndKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "skills-lock.json")
+
+	removed, err := RemoveEntryIfExists(path, "ghost")
+	if err != nil || removed {
+		t.Fatalf("expected missing lock to be ignored, removed=%v err=%v", removed, err)
+	}
+
+	content := `{"version":1,"extra":"keep","skills":{"a":{"source":"o/r"},"b":{"source":"o/r2"}}}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err = RemoveEntryIfExists(path, "missing")
+	if err != nil || removed {
+		t.Fatalf("expected missing key to be ignored, removed=%v err=%v", removed, err)
+	}
+
+	removed, err = RemoveEntryIfExists(path, "a")
+	if err != nil || !removed {
+		t.Fatalf("expected existing key to be removed, removed=%v err=%v", removed, err)
+	}
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), `"a"`) || !strings.Contains(string(raw), `"b"`) || !strings.Contains(string(raw), `"extra"`) {
+		t.Fatalf("expected a pruned while preserving b and extra, got %s", raw)
+	}
+}

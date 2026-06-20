@@ -849,6 +849,50 @@ func TestExecutePruneLockRemovesEntry(t *testing.T) {
 	}
 }
 
+func TestExecuteRemovePrunesProjectLockEntry(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "skills-lock.json")
+	if err := os.WriteFile(lockPath, []byte(`{"version":1,"skills":{"ghost":{"source":"o/r"},"keep":{"source":"o/r"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalRunExec := runExec
+	runExec = func(spec runner.ExecSpec) runner.Result {
+		return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
+	}
+	t.Cleanup(func() { runExec = originalRunExec })
+
+	m := appModel{cwd: dir, width: 120, height: 32}
+	action := actions.CommandPreview{
+		ID:           "remove",
+		ConfirmValue: "ghost",
+		Mutates:      true,
+		Exec:         actions.ExecSpec{Program: "skills", Args: []string{"remove", "ghost", "--yes"}},
+	}
+	_, cmd := m.executeAction(action)
+	if cmd == nil {
+		t.Fatal("expected command")
+	}
+	msg, ok := cmd().(actionResultMsg)
+	if !ok {
+		t.Fatalf("expected actionResultMsg")
+	}
+	if msg.result.ExitCode != 0 || msg.result.Err != "" {
+		t.Fatalf("expected successful remove result, got %#v", msg.result)
+	}
+
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "ghost") {
+		t.Fatalf("expected 'ghost' entry pruned after remove, got %s", data)
+	}
+	if !strings.Contains(string(data), "keep") {
+		t.Fatalf("expected 'keep' entry preserved, got %s", data)
+	}
+}
+
 func TestHumanizeSince(t *testing.T) {
 	now := time.Now()
 	cases := []struct {
