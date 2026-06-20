@@ -6,6 +6,10 @@
 .codegraph/
 .DS_Store
 
+# Local agent/skill inventory state
+.agents/
+skills-lock.json
+
 # Local asset scratch / dump folder — not for the repo
 lfs/
 
