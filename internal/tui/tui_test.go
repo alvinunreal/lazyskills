@@ -369,7 +369,7 @@ func TestConfirmationAcceptsDefaultYAndYes(t *testing.T) {
 	}
 }
 
-func TestConfirmationRejectsEmptyInput(t *testing.T) {
+func TestSafeConfirmationAcceptsEmptyInput(t *testing.T) {
 	called := false
 	old := runExec
 	runExec = func(spec runner.ExecSpec) runner.Result { called = true; return runner.Result{ExitCode: 0} }
@@ -381,14 +381,15 @@ func TestConfirmationRejectsEmptyInput(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(appModel)
 
-	// Just press Enter with empty/whitespace input
+	// Safe actions accept empty Enter as the default confirmation.
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(appModel)
-	if cmd != nil || m.running || !m.confirming {
-		t.Fatalf("expected empty/whitespace input to be rejected, running=%v confirming=%v cmd=%v", m.running, m.confirming, cmd)
+	if cmd == nil || !m.running || m.confirming {
+		t.Fatalf("expected empty input to run safe confirmation, running=%v confirming=%v cmd=%v", m.running, m.confirming, cmd)
 	}
-	if called {
-		t.Fatalf("expected command execution to not occur")
+	cmd()
+	if !called {
+		t.Fatalf("expected command execution")
 	}
 }
 
@@ -399,7 +400,7 @@ func TestConfirmationRendersCenteredModal(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(appModel)
 	out := m.View()
-	if !strings.Contains(out, "Confirm") || !strings.Contains(out, "press Enter to confirm") || strings.Contains(out, "Bulk actions") {
+	if !strings.Contains(out, "Reinstall/update selected skill") || !strings.Contains(out, "Press Enter to continue") || strings.Contains(out, "Bulk actions") {
 		t.Fatalf("expected standalone confirmation modal, got %q", out)
 	}
 }
@@ -1082,8 +1083,92 @@ func TestRemoveRequiresExactTypedIdentity(t *testing.T) {
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(appModel)
-	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, "Type yes") || m.actionResult != nil {
+	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, `Type "deploy-skill" exactly`) || m.actionResult != nil {
 		t.Fatalf("expected inline confirmation error without command, confirming=%v err=%q result=%#v cmd=%v", m.confirming, m.confirmError, m.actionResult, cmd)
+	}
+}
+
+func TestDangerousConfirmationRejectsYesAndAcceptsExactPhrase(t *testing.T) {
+	old := runExec
+	runExec = func(spec runner.ExecSpec) runner.Result {
+		return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
+	}
+	t.Cleanup(func() { runExec = old })
+
+	m := actionTestModel(t.TempDir())
+	m.commands = true
+	m.action = actionIndex(t, m, "Remove selected skill")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	for _, r := range []rune("yes") {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(appModel)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, `Type "deploy-skill" exactly`) {
+		t.Fatalf("expected yes to be rejected for dangerous confirmation, confirming=%v err=%q cmd=%v", m.confirming, m.confirmError, cmd)
+	}
+
+	for _, r := range []rune("deploy-skill") {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(appModel)
+	}
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	if cmd == nil || !m.running {
+		t.Fatalf("expected exact phrase to run dangerous action, running=%v cmd=%v", m.running, cmd)
+	}
+}
+
+func TestConfirmationAllowsSkillNamesStartingWithN(t *testing.T) {
+	m := actionTestModel(t.TempDir())
+	m.result.Skills[0].CanonicalPath = "/tmp/next-auth"
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m = updated.(appModel)
+	if cmd != nil || !m.confirming || m.currentActions()[m.action].ConfirmValue != "next-auth" {
+		t.Fatalf("expected remove confirmation for next-auth, confirming=%v action=%#v cmd=%v", m.confirming, m.currentActions()[m.action], cmd)
+	}
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = updated.(appModel)
+	if cmd != nil || !m.confirming || m.confirmInput != "n" {
+		t.Fatalf("expected first n to be typed, not cancel confirmation; confirming=%v input=%q cmd=%v", m.confirming, m.confirmInput, cmd)
+	}
+}
+
+func TestDirectSafeConfirmationAcceptsEmptyEnter(t *testing.T) {
+	old := runExec
+	runExec = func(spec runner.ExecSpec) runner.Result {
+		return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
+	}
+	t.Cleanup(func() { runExec = old })
+
+	m := actionTestModel(t.TempDir())
+	m.commands = true
+	m.action = actionIndex(t, m, "Reinstall/update selected skill")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	if cmd == nil || !m.running {
+		t.Fatalf("expected empty Enter to run safe action, running=%v cmd=%v", m.running, cmd)
+	}
+}
+
+func TestConfirmationOverlayCopyMatchesRisk(t *testing.T) {
+	m := actionTestModel(t.TempDir())
+	m.commands = true
+	m.action = actionIndex(t, m, "Reinstall/update selected skill")
+	m.confirming = true
+	safeOut := m.confirmationOverlay(appLayout{Width: 120, Height: 32})
+	if !strings.Contains(safeOut, "Press Enter to continue, or Esc to cancel.") || strings.Contains(safeOut, "Type ") {
+		t.Fatalf("expected safe confirmation copy, got %q", safeOut)
+	}
+
+	m.action = actionIndex(t, m, "Remove selected skill")
+	dangerOut := m.confirmationOverlay(appLayout{Width: 120, Height: 32})
+	if !strings.Contains(dangerOut, `deploy-skill`) || !strings.Contains(dangerOut, `to confirm`) || strings.Contains(dangerOut, "y / yes") {
+		t.Fatalf("expected dangerous exact-phrase copy, got %q", dangerOut)
 	}
 }
 

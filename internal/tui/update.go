@@ -227,13 +227,6 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirmInput = ""
 				m.confirmError = ""
 				m.pendingAction = nil
-			case "n":
-				if m.confirmInput == "" {
-					m.confirming = false
-					m.confirmInput = ""
-					m.confirmError = ""
-					m.pendingAction = nil
-				}
 			case "pgdown", "ctrl+d", "pgup", "ctrl+u":
 				var cmd tea.Cmd
 				m.viewport, cmd = m.viewport.Update(msg)
@@ -727,8 +720,8 @@ func (m appModel) confirmAction() (tea.Model, tea.Cmd) {
 		}
 		action = acts[m.action]
 	}
-	if !confirmationAccepted(m.confirmInput, action.ConfirmValue) {
-		m.confirmError = "Type yes, y, or the displayed phrase. Press Esc to cancel."
+	if !confirmationAccepted(m.confirmInput, action) {
+		m.confirmError = confirmationError(action)
 		m.confirmInput = ""
 		m.syncViewport()
 		return m, nil
@@ -737,12 +730,22 @@ func (m appModel) confirmAction() (tea.Model, tea.Cmd) {
 	return m.executeAction(action)
 }
 
-func confirmationAccepted(input, confirmValue string) bool {
+func confirmationAccepted(input string, action actions.CommandPreview) bool {
+	if action.Dangerous {
+		return input == action.ConfirmValue && action.ConfirmValue != ""
+	}
 	value := strings.TrimSpace(strings.ToLower(input))
 	if value == "" {
-		return false
+		return true
 	}
-	return value == "y" || value == "yes" || input == confirmValue
+	return value == "y" || value == "yes" || input == action.ConfirmValue
+}
+
+func confirmationError(action actions.CommandPreview) string {
+	if action.Dangerous {
+		return fmt.Sprintf("Type %q exactly, or press Esc to cancel.", action.ConfirmValue)
+	}
+	return "Press Enter to continue, or Esc to cancel."
 }
 
 func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.Cmd) {

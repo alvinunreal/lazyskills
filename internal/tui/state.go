@@ -350,7 +350,7 @@ func (m appModel) sourceActions(group string) []actions.CommandPreview {
 	desc := "Scan the local source root for uninstalled skills."
 	if isRemote {
 		title = "Check remote source for available skills"
-		desc = "Clone and scan the remote repository for available skills."
+		desc = "Scan this source for available skills."
 	}
 	discPreview := actions.CommandPreview{
 		ID:              "source_discover",

@@ -456,7 +456,7 @@ func defaultGitClone(url, ref, tempDir string) error {
 
 	cmd := exec.Command("git", "clone", "--depth", "1", url, tempDir)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to clone repository: %w", err)
+		return fmt.Errorf("failed to scan source: %w", err)
 	}
 
 	if ref != "" {

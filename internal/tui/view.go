@@ -552,7 +552,7 @@ func (m appModel) previewLines(width int) []string {
 		case !discOk:
 			lines = append(lines, sectionHeaderStyle.Render("Available"), dimStyle.Render("  press d to scan this source"))
 		case disc.Status == DiscoveryLoading && isRemote:
-			lines = append(lines, sectionHeaderStyle.Render("Available"), dimStyle.Render("  cloning & scanning…"))
+			lines = append(lines, sectionHeaderStyle.Render("Available"), dimStyle.Render("  scanning…"))
 		case disc.Status == DiscoveryLoading:
 			lines = append(lines, sectionHeaderStyle.Render("Available"), dimStyle.Render("  scanning…"))
 		case disc.Status == DiscoveryFailed:
@@ -743,7 +743,7 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 		switch disc.Status {
 		case DiscoveryLoading:
 			if isRemote {
-				lines = append(lines, dimStyle.Render("  Cloning & scanning…"))
+				lines = append(lines, dimStyle.Render("  Scanning…"))
 			} else {
 				lines = append(lines, dimStyle.Render("  Scanning…"))
 			}
@@ -1235,48 +1235,47 @@ func (m appModel) confirmationOverlay(layout appLayout) string {
 	title := "Confirm action"
 	phrase := ""
 	command := ""
+	dangerous := false
 	if m.pendingAction != nil {
 		title = compat.SanitizeMetadata(m.pendingAction.Title)
 		phrase = compat.SanitizeMetadata(m.pendingAction.ConfirmValue)
 		command = compat.SanitizeMetadata(m.pendingAction.Command)
+		dangerous = m.pendingAction.Dangerous
 	} else if acts := m.currentActions(); len(acts) > 0 && m.action < len(acts) {
 		action := acts[m.action]
 		title = compat.SanitizeMetadata(action.Title)
 		phrase = compat.SanitizeMetadata(action.ConfirmValue)
 		command = compat.SanitizeMetadata(action.Command)
+		dangerous = action.Dangerous
+	}
+	headerStyle := sectionHeaderStyle
+	borderColor := actionBorderColor
+	placeholder := "Enter"
+	instruction := "Press Enter to continue, or Esc to cancel."
+	if dangerous {
+		headerStyle = errorStyle.Bold(true)
+		borderColor = lipgloss.Color("203")
+		placeholder = phrase
+		instruction = fmt.Sprintf("Type %q to confirm, or Esc to cancel.", phrase)
 	}
 	lines := []string{
-		errorStyle.Bold(true).Render("Confirm Action"),
-		"",
-		sectionHeaderStyle.Render("Action:"),
-		wrapText(title, 48),
-		"",
-		sectionHeaderStyle.Render("Command:"),
-		dimStyle.Render(wrapText(command, 48)),
+		headerStyle.Render(title),
 		"",
 	}
-	if phrase == "yes" || phrase == "y" {
-		lines = append(lines, "Type 'y' or 'yes' and press Enter to confirm.")
-	} else if phrase != "" {
-		lines = append(lines, "Type 'y', 'yes', or '"+phrase+"' and press Enter to confirm.")
-	} else {
-		lines = append(lines, "Type 'y' or 'yes' and press Enter to confirm.")
+	if command != "" {
+		lines = append(lines, sectionHeaderStyle.Render("Command"), dimStyle.Render(wrapText(command, 48)), "")
 	}
-	lines = append(lines, "Press Esc to cancel.")
+	lines = append(lines, wrapText(instruction, 48))
 
 	if m.confirmError != "" {
 		lines = append(lines, "", errorStyle.Render(m.confirmError))
 	}
 	input := compat.SanitizeMetadata(m.confirmInput)
 	if input == "" {
-		placeholder := "y / yes"
-		if phrase != "yes" && phrase != "y" && phrase != "" {
-			placeholder = fmt.Sprintf("y / yes / %s", phrase)
-		}
 		input = dimStyle.Render(placeholder)
 	}
 	lines = append(lines, "", "> "+input+"_")
-	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(actionBorderColor).Padding(1, 2).Width(52).Render(strings.Join(lines, "\n"))
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(borderColor).Padding(1, 2).Width(52).Render(strings.Join(lines, "\n"))
 	return fitToScreen(lipgloss.Place(layout.Width, layout.Height, lipgloss.Center, lipgloss.Center, box), layout.Width, layout.Height)
 }
 
