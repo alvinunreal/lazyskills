@@ -10,10 +10,19 @@ $Owner = "alvinunreal"
 $Repo = "lazyskills"
 $Binary = "lazyskills.exe"
 
-$arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+$osArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+$processorArchitecture = $env:PROCESSOR_ARCHITECTURE
+
+$arch = switch ($osArchitecture) {
   "X64" { "x86_64"; break }
   "Arm64" { "arm64"; break }
-  default { throw "Unsupported architecture: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
+  default {
+    switch ($processorArchitecture) {
+      "AMD64" { "x86_64"; break }
+      "ARM64" { "arm64"; break }
+      default { throw "Unsupported architecture: OSArchitecture=${osArchitecture}; PROCESSOR_ARCHITECTURE=${processorArchitecture}" }
+    }
+  }
 }
 
 $archive = "${Repo}_Windows_${arch}.zip"
