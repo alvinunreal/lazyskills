@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 
+	"github.com/alvinunreal/lazyskills/internal/buildinfo"
 	"github.com/alvinunreal/lazyskills/internal/scan"
+	"github.com/alvinunreal/lazyskills/internal/selfupdate"
 	"github.com/alvinunreal/lazyskills/internal/tui"
 )
 
@@ -15,6 +18,18 @@ var (
 	commit  = "none"
 	date    = "unknown"
 )
+
+func init() {
+	if version != "dev" && version != "" {
+		buildinfo.Version = version
+	}
+	if commit != "none" && commit != "" {
+		buildinfo.Commit = commit
+	}
+	if date != "unknown" && date != "" {
+		buildinfo.Date = date
+	}
+}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -25,7 +40,95 @@ func main() {
 
 func run(args []string) error {
 	if len(args) > 0 && (args[0] == "version" || args[0] == "--version" || args[0] == "-v") {
-		fmt.Fprintf(os.Stdout, "lazyskills %s\ncommit: %s\nbuilt: %s\n", version, commit, date)
+		fmt.Fprintf(os.Stdout, "lazyskills %s\ncommit: %s\nbuilt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.Date)
+		return nil
+	}
+	if len(args) > 0 && args[0] == "update" {
+		fs := flag.NewFlagSet("update", flag.ContinueOnError)
+		fs.SetOutput(os.Stderr)
+		checkOnly := fs.Bool("check", false, "only check if update is available")
+		printCmd := fs.Bool("print-command", false, "print upgrade command and exit")
+		yes := fs.Bool("yes", false, "apply update automatically without confirmation")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+
+		ctx := context.Background()
+		plan, err := selfupdate.Plan(ctx, true, nil)
+		if err != nil {
+			return fmt.Errorf("update check failed: %w", err)
+		}
+
+		if *checkOnly {
+			if plan.Status == selfupdate.StatusAvailable {
+				fmt.Fprintf(os.Stdout, "Update available: %s (current: %s)\n", plan.Latest, plan.Current)
+			} else if plan.Status == selfupdate.StatusUnknown {
+				if plan.Reason != "" {
+					fmt.Fprintln(os.Stdout, plan.Reason)
+				} else {
+					fmt.Fprintln(os.Stdout, "Update status unknown.")
+				}
+			} else {
+				fmt.Fprintln(os.Stdout, "Already up to date.")
+			}
+			return nil
+		}
+
+		if *printCmd {
+			if plan.Status == selfupdate.StatusAvailable {
+				if plan.CommandPreview != "" {
+					fmt.Fprintln(os.Stdout, plan.CommandPreview)
+				} else {
+					fmt.Fprintln(os.Stdout, plan.Reason)
+				}
+			} else if plan.Status == selfupdate.StatusUnknown {
+				if plan.Reason != "" {
+					fmt.Fprintln(os.Stdout, plan.Reason)
+				} else {
+					fmt.Fprintln(os.Stdout, "Update status unknown.")
+				}
+			} else {
+				fmt.Fprintln(os.Stdout, "Already up to date.")
+			}
+			return nil
+		}
+
+		if plan.Status == selfupdate.StatusUnknown {
+			if plan.Reason != "" {
+				fmt.Fprintln(os.Stdout, plan.Reason)
+			} else {
+				fmt.Fprintln(os.Stdout, "Update status unknown.")
+			}
+			return nil
+		}
+
+		if plan.Status == selfupdate.StatusAvailable {
+			if *yes {
+				if plan.CanExecute {
+					fmt.Fprintf(os.Stdout, "Updating lazyskills to %s...\n", plan.Latest)
+					if err := selfupdate.Apply(ctx, plan, nil); err != nil {
+						return fmt.Errorf("update failed: %w", err)
+					}
+					fmt.Fprintln(os.Stdout, "Update applied successfully. Please restart lazyskills.")
+					return nil
+				} else {
+					fmt.Fprintf(os.Stdout, "Auto-update not supported for install channel: %s\n%s\n", plan.Channel, plan.Reason)
+					if plan.CommandPreview != "" {
+						fmt.Fprintf(os.Stdout, "Command: %s\n", plan.CommandPreview)
+					}
+					return nil
+				}
+			} else {
+				fmt.Fprintf(os.Stdout, "Update available: %s (current: %s)\n", plan.Latest, plan.Current)
+				fmt.Fprintf(os.Stdout, "%s\n", plan.Reason)
+				if plan.CommandPreview != "" {
+					fmt.Fprintf(os.Stdout, "Command: %s\n", plan.CommandPreview)
+				}
+				return nil
+			}
+		}
+
+		fmt.Fprintln(os.Stdout, "Already up to date.")
 		return nil
 	}
 	if len(args) == 0 {
@@ -43,7 +146,7 @@ func run(args []string) error {
 			return err
 		}
 		if fs.NArg() > 0 {
-			return fmt.Errorf("usage: lazyskills [--cwd <path>] | lazyskills scan --json [--cwd <path>] | lazyskills version")
+			return fmt.Errorf("usage: lazyskills [--cwd <path>] | lazyskills scan --json [--cwd <path>] | lazyskills update [--check] [--print-command] [--yes] | lazyskills version")
 		}
 		if *cwd == "" {
 			var err error

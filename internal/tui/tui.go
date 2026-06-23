@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -11,6 +12,7 @@ import (
 	"github.com/alvinunreal/lazyskills/internal/model"
 	"github.com/alvinunreal/lazyskills/internal/runner"
 	"github.com/alvinunreal/lazyskills/internal/scan"
+	"github.com/alvinunreal/lazyskills/internal/selfupdate"
 )
 
 type scopeFilter int
@@ -90,6 +92,12 @@ type appModel struct {
 	modalSource             string
 	pendingG                bool                    // saw a lone "g"; a second "g" jumps to top
 	pendingAction           *actions.CommandPreview // action awaiting confirm (decoupled from selection)
+	updatePlan              *selfupdate.UpdatePlan
+	updatePlanErr           error
+	appUpdateModal          bool
+	updatingApp             bool
+	updateSuccess           bool
+	updateError             error
 }
 
 type paneLayout struct {
@@ -113,7 +121,6 @@ type appLayout struct {
 const (
 	minLayoutWidth  = 40
 	minLayoutHeight = 7
-	appVersion      = "v1"
 )
 
 var (
@@ -166,6 +173,15 @@ type actionResultMsg struct {
 	partialSuccess bool
 }
 
+type updatePlanMsg struct {
+	plan *selfupdate.UpdatePlan
+	err  error
+}
+
+type appUpdateResultMsg struct {
+	err error
+}
+
 func Run(cwd string) error {
 	program := tea.NewProgram(newModel(cwd), tea.WithAltScreen())
 	_, err := program.Run()
@@ -185,7 +201,19 @@ func newModel(cwd string) appModel {
 }
 
 func (m appModel) Init() tea.Cmd {
-	return loadSnapshot(m.cwd)
+	return tea.Batch(
+		loadSnapshot(m.cwd),
+		m.checkUpdateCmd(false),
+	)
+}
+
+func (m appModel) checkUpdateCmd(forceLive bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		plan, err := selfupdate.Plan(ctx, forceLive, nil)
+		return updatePlanMsg{plan: plan, err: err}
+	}
 }
 
 func loadSnapshot(cwd string) tea.Cmd {

@@ -11,6 +11,7 @@ import (
 	"github.com/alvinunreal/lazyskills/internal/compat"
 	"github.com/alvinunreal/lazyskills/internal/display"
 	"github.com/alvinunreal/lazyskills/internal/model"
+	"github.com/alvinunreal/lazyskills/internal/selfupdate"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -29,6 +30,9 @@ func (m appModel) View() string {
 
 	if m.detailModal {
 		return m.detailModalOverlay(layout)
+	}
+	if m.appUpdateModal {
+		return m.appUpdateModalOverlay(layout)
 	}
 	if m.helpOpen {
 		return m.helpModalOverlay(layout)
@@ -1309,6 +1313,17 @@ func (m appModel) footerText(width int) string {
 			text = "enter open · e enable/disable · c actions · u update · x remove · ? help"
 		}
 	}
+	isNormalState := !m.running && !m.confirming && !m.searching && !m.detailModal && !m.commands && !m.helpOpen
+	if isNormalState && m.updatePlan != nil && m.updatePlan.Status == selfupdate.StatusAvailable {
+		latestClean := m.updatePlan.Latest
+		if strings.HasPrefix(strings.ToLower(latestClean), "v") {
+			latestClean = latestClean[1:]
+		}
+		notice := fmt.Sprintf(" · U update (v%s available)", latestClean)
+		if width >= 80 {
+			text += notice
+		}
+	}
 	return dimStyle.Render(truncate(text, width))
 }
 
@@ -1346,6 +1361,7 @@ func (m appModel) helpModalOverlay(layout appLayout) string {
 		"  e               Enable / disable selected skill or source group",
 		"  c               Open command picker menu",
 		"  u / x           Quick reinstall-update / remove for selection",
+		"  U               Check/run LazySkills application update",
 		"  d               Check local or remote source for available skills (Source row)",
 		"  r               Refresh scan snapshot",
 		"",
@@ -1515,4 +1531,98 @@ func (m appModel) runningOverlay(layout appLayout) string {
 	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(actionBorderColor).Padding(1, 2).Width(52).Render(strings.Join(lines, "\n"))
 	return fitToScreen(lipgloss.Place(layout.Width, layout.Height, lipgloss.Center, lipgloss.Center, box), layout.Width, layout.Height)
+}
+
+func (m appModel) appUpdateModalOverlay(layout appLayout) string {
+	modalWidth := 74
+	if layout.Width < modalWidth+4 {
+		modalWidth = layout.Width - 4
+	}
+	if modalWidth < 20 {
+		modalWidth = 20
+	}
+
+	var sections []string
+	sections = append(sections, titleStyle.Render(" LazySkills App Update "))
+	sections = append(sections, "")
+
+	plan := m.updatePlan
+	if m.updatePlanErr != nil {
+		sections = append(sections, errorStyle.Render("✗ Update check failed:"))
+		sections = append(sections, wrapText(m.updatePlanErr.Error(), modalWidth-4))
+		sections = append(sections, "")
+		sections = append(sections, dimStyle.Render("esc/q close"))
+	} else if plan == nil {
+		sections = append(sections, "Checking for updates...")
+		sections = append(sections, "")
+		sections = append(sections, dimStyle.Render("esc/q close"))
+	} else {
+		sections = append(sections, fmt.Sprintf("Current Version: %s", plan.Current))
+		sections = append(sections, fmt.Sprintf("Latest Version:  %s", plan.Latest))
+		sections = append(sections, fmt.Sprintf("Install Channel: %s", plan.Channel))
+		sections = append(sections, "")
+
+		if m.updatingApp {
+			sections = append(sections, runningStyle.Render("Updating... Please wait."))
+			sections = append(sections, "Downloading archive and verifying checksum...")
+		} else if m.updateSuccess {
+			sections = append(sections, successStyle.Render("✓ Update successful!"))
+			sections = append(sections, "Please restart lazyskills to apply the update.")
+			sections = append(sections, "")
+			sections = append(sections, dimStyle.Render("esc/q close"))
+		} else if m.updateError != nil {
+			sections = append(sections, errorStyle.Render("✗ Update failed:"))
+			sections = append(sections, wrapText(m.updateError.Error(), modalWidth-4))
+			sections = append(sections, "")
+			sections = append(sections, dimStyle.Render("enter retry · esc/q close"))
+		} else {
+			if plan.CanExecute {
+				sections = append(sections, "A newer version is available. Would you like to update?")
+				sections = append(sections, "")
+				if plan.ReleaseNotes != "" {
+					sections = append(sections, sectionHeaderStyle.Render("Release Notes:"), truncateReleaseNotes(plan.ReleaseNotes, modalWidth-4), "")
+				}
+				sections = append(sections, "enter start update · esc/q cancel")
+			} else {
+				if plan.Status == selfupdate.StatusAlreadyLatest {
+					sections = append(sections, "You are already running the latest version.")
+				} else if plan.Status == selfupdate.StatusUnknown {
+					sections = append(sections, "Update check status is unknown.")
+					sections = append(sections, plan.Reason)
+				} else {
+					sections = append(sections, "Auto-update is not supported for this install channel.")
+					sections = append(sections, plan.Reason)
+					if plan.CommandPreview != "" {
+						sections = append(sections, "")
+						sections = append(sections, "To upgrade, run:")
+						sections = append(sections, lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Render("  "+plan.CommandPreview))
+					}
+				}
+				sections = append(sections, "")
+				sections = append(sections, dimStyle.Render("esc/q close"))
+			}
+		}
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(actionBorderColor).
+		Padding(1, 2).
+		Width(modalWidth).
+		Render(strings.Join(sections, "\n"))
+
+	return fitToScreen(lipgloss.Place(layout.Width, layout.Height, lipgloss.Center, lipgloss.Center, box), layout.Width, layout.Height)
+}
+
+func truncateReleaseNotes(notes string, width int) string {
+	lines := strings.Split(notes, "\n")
+	var out []string
+	for i, line := range lines {
+		if i >= 10 {
+			out = append(out, "... (truncated)")
+			break
+		}
+		out = append(out, wrapText(line, width))
+	}
+	return strings.Join(out, "\n")
 }
