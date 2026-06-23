@@ -254,15 +254,14 @@ func scanDisabledLocation(loc agents.Location, skills map[string]*model.Skill) {
 		if info.Mode()&os.ModeSymlink != 0 {
 			target, _ := os.Readlink(path)
 			if !filepath.IsAbs(target) {
-				target = filepath.Join(filepath.Dir(path), target)
+				target = filepath.Join(loc.Root, target)
 			}
-			if st, err := os.Stat(path); err != nil || !st.IsDir() {
+			if st, err := os.Stat(target); err != nil || !st.IsDir() {
 				sk := ensureSkill(skills, loc.Scope, entry.Name(), entry.Name(), "")
 				addObservedPath(sk, observed)
-				sk.AddHealthIssue(model.HealthIssue{Type: "broken_symlink", Severity: "error", Message: "disabled skill path is a broken symlink", Path: path})
 				continue
 			}
-			parseDir = path
+			parseDir = target
 		} else if !info.IsDir() {
 			continue
 		}

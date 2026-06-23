@@ -576,3 +576,50 @@ func TestScanDisabledSkills(t *testing.T) {
 		t.Fatal("expected to find disabled skill 'Review'")
 	}
 }
+
+func TestScanDisabledRelativeSymlinkDoesNotReportBroken(t *testing.T) {
+	home := withHome(t)
+	cwd := t.TempDir()
+
+	targetDir := filepath.Join(home, "source-skills", "cloudflare")
+	writeSkill(t, targetDir, "Cloudflare", "Cloudflare skills")
+
+	disabledRoot := filepath.Join(home, ".claude", "skills", ".lazyskills-disabled")
+	if err := os.MkdirAll(disabledRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// This is the kind of relative symlink that works from ~/.claude/skills,
+	// but becomes broken according to the OS after it is moved into the disabled
+	// shelf. Disabled scans should resolve it relative to the active root and not
+	// report a false broken_symlink health issue.
+	if err := os.Symlink(filepath.Join("..", "..", "source-skills", "cloudflare"), filepath.Join(disabledRoot, "cloudflare")); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var found *model.Skill
+	for _, sk := range res.Skills {
+		if sk.Name == "Cloudflare" {
+			found = sk
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected to find disabled symlink skill 'Cloudflare'")
+	}
+	if !found.Disabled {
+		t.Fatalf("expected Cloudflare skill to be disabled, got %#v", found)
+	}
+	for _, issue := range found.HealthIssues {
+		if issue.Type == "broken_symlink" {
+			t.Fatalf("disabled symlink should not report broken_symlink: %#v", issue)
+		}
+	}
+	if found.Preview == "" {
+		t.Fatal("expected disabled symlink target preview to be parsed")
+	}
+}
