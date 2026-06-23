@@ -541,42 +541,6 @@ func (m appModel) metadataLinesForRows(rows []skillsRow, width int) []string {
 		lines = append(lines, formatMetaLine("Agent:", m.agentLabel(), width))
 	}
 	lines = append(lines, m.visibilitySummary(view, width)...)
-	if len(view.Observed) > 0 && m.agent == "" {
-		agentsSet := map[string]bool{}
-		observedAgents := []string{}
-		for _, p := range view.Observed {
-			if p.Agent != "" && !agentsSet[p.Agent] {
-				agentsSet[p.Agent] = true
-				observedAgents = append(observedAgents, p.Agent)
-			}
-		}
-		if len(observedAgents) > 0 {
-			lines = append(lines, formatMetaLine("Observed:", strings.Join(observedAgents, ", "), width))
-		}
-	}
-
-	if len(view.Observed) > 0 && m.agent != "" {
-		showObservedSection := false
-		for _, p := range view.Observed {
-			if p.Agent == m.agent {
-				if !showObservedSection {
-					lines = append(lines, "", sectionHeaderStyle.Render("Observed Paths"))
-					showObservedSection = true
-				}
-				statusStyled := p.Status
-				if p.Status == "linked" || p.Status == "active" {
-					statusStyled = lipgloss.NewStyle().Foreground(lipgloss.Color("114")).Render(p.Status)
-				} else {
-					statusStyled = dimStyle.Render(p.Status)
-				}
-				line := fmt.Sprintf("  • %s (%s): %s", p.Agent, p.Scope, statusStyled)
-				if p.TargetPath != "" {
-					line += " → " + p.TargetPath
-				}
-				lines = append(lines, wrapText(line, width))
-			}
-		}
-	}
 
 	if len(view.HealthIssues) > 0 {
 		issueErrors, _ := healthIssueCounts(view.HealthIssues)
