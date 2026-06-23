@@ -157,3 +157,32 @@ func TestZedDetectorUsesConfigAppDataAndFlatpak(t *testing.T) {
 		t.Fatalf("expected zed detected from Flatpak config")
 	}
 }
+
+func TestLocationsDoNotTreatHomeGlobalDirsAsProjectDirs(t *testing.T) {
+	home := "/home/test"
+	locations := LocationsWithEnv(home, testEnv(home))
+
+	for _, loc := range locations {
+		if loc.Scope != "project" {
+			continue
+		}
+		switch filepath.Clean(loc.Root) {
+		case filepath.Join(home, ".agents", "skills"), filepath.Join(home, ".claude", "skills"), filepath.Join(home, ".codex", "skills"):
+			t.Fatalf("home global dir should not be project location: %#v", loc)
+		}
+	}
+}
+
+func TestLocationsKeepProjectDirsOutsideHome(t *testing.T) {
+	home := "/home/test"
+	cwd := "/repo"
+	locations := LocationsWithEnv(cwd, testEnv(home))
+
+	want := filepath.Join(cwd, ".agents", "skills")
+	for _, loc := range locations {
+		if loc.Scope == "project" && loc.Root == want {
+			return
+		}
+	}
+	t.Fatalf("expected project location %q outside home", want)
+}
