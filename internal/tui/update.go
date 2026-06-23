@@ -25,6 +25,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case snapshotMsg:
 		m.result = msg.result
 		sortSkills(m.result.Skills)
+		m.rebuildSkillSearchText()
 		m.err = msg.err
 		if m.agent != "" {
 			detected := false
@@ -672,8 +673,9 @@ func (m appModel) modalChildRows(groupName string) []modalChildRow {
 	// 2. Available skills
 	disc, ok := m.discovery[groupName]
 	if ok && disc.Status == DiscoveryReady {
+		installed := m.installedSkillNames(groupName)
 		for i, ds := range disc.Skills {
-			if !m.isSkillInstalled(ds.Name, groupName) {
+			if !isSkillNameInstalled(ds.Name, installed) {
 				rows = append(rows, modalChildRow{
 					isAvailable:     true,
 					discoveredSkill: &disc.Skills[i],

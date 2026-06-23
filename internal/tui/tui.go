@@ -81,6 +81,7 @@ type appModel struct {
 	focus            focusState
 	collapsedGroups  map[string]bool
 	discovery        map[string]SourceDiscovery
+	skillSearchText  map[*model.Skill]string
 	modalSelected    int
 	modalSource      string
 	pendingG         bool                    // saw a lone "g"; a second "g" jumps to top

@@ -22,6 +22,22 @@ func (m appModel) View() string {
 		return smallTerminalView(layout.Width, layout.Height)
 	}
 
+	if m.detailModal {
+		return m.detailModalOverlay(layout)
+	}
+	if m.helpOpen {
+		return m.helpModalOverlay(layout)
+	}
+	if m.running {
+		return m.runningOverlay(layout)
+	}
+	if m.confirming {
+		return m.confirmationOverlay(layout)
+	}
+	if m.commands {
+		return m.commandsOverlay(layout)
+	}
+
 	// Keep View pure for callers: sync a local copy so render-time fallback
 	// sizing does not mutate the model stored by Bubble Tea.
 	viewModel := m
@@ -51,21 +67,6 @@ func (m appModel) View() string {
 	rightSide := lipgloss.JoinVertical(lipgloss.Left, metadata, preview)
 	view := lipgloss.JoinHorizontal(lipgloss.Top, list, rightSide)
 
-	if viewModel.detailModal {
-		return viewModel.detailModalOverlay(layout)
-	}
-	if viewModel.helpOpen {
-		return viewModel.helpModalOverlay(layout)
-	}
-	if viewModel.running {
-		return viewModel.runningOverlay(layout)
-	}
-	if viewModel.confirming {
-		return viewModel.confirmationOverlay(layout)
-	}
-	if viewModel.commands {
-		return viewModel.commandsOverlay(layout)
-	}
 	footer := viewModel.footerText(layout.Width)
 	return view + "\n" + footer
 }
@@ -115,9 +116,9 @@ func (m appModel) listTitle() string {
 }
 
 func (m appModel) listPane(height, width int) string {
-	items := m.filteredSkills()
+	vRows := m.visibleRows()
 	var lines []string
-	if len(items) == 0 {
+	if len(vRows) == 0 {
 		var detail []string
 		if m.result.Preflight != nil && !m.result.Preflight.CanRunSkills {
 			detail = append(detail,
@@ -179,11 +180,15 @@ func (m appModel) listPane(height, width int) string {
 	}
 
 	visible := max(1, height-len(lines))
-	vRows := m.visibleRows()
-	var renderedRows []string
 	selectedRow := m.selected
+	start := 0
+	if selectedRow >= visible {
+		start = selectedRow - visible + 1
+	}
+	end := min(len(vRows), start+visible)
 
-	for idx, row := range vRows {
+	for idx, row := range vRows[start:end] {
+		rowIndex := start + idx
 		var line string
 		if row.isHeader {
 			affordance := "- "
@@ -195,7 +200,7 @@ func (m appModel) listPane(height, width int) string {
 			if n := m.availableCount(row.groupName); n > 0 {
 				hint = fmt.Sprintf("  +%d available", n)
 			}
-			if idx == selectedRow {
+			if rowIndex == selectedRow {
 				line = selectedStyle.Render(truncate(headerText+hint, width))
 			} else {
 				line = dimStyle.Render(truncate(headerText, width-lipgloss.Width(hint))) + dimStyle.Render(hint)
@@ -229,7 +234,7 @@ func (m appModel) listPane(height, width int) string {
 			nameCore := truncate(mark+view.Name, max(1, width-lipgloss.Width(tail)))
 
 			switch {
-			case idx == selectedRow:
+			case rowIndex == selectedRow:
 				line = selectedStyle.Render(nameCore + tail)
 			case issueErrors > 0:
 				line = errorStyle.Render(nameCore + tail)
@@ -240,15 +245,6 @@ func (m appModel) listPane(height, width int) string {
 				}
 			}
 		}
-		renderedRows = append(renderedRows, line)
-	}
-
-	start := 0
-	if selectedRow >= visible {
-		start = selectedRow - visible + 1
-	}
-	end := min(len(renderedRows), start+visible)
-	for _, line := range renderedRows[start:end] {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
@@ -308,7 +304,10 @@ func (m appModel) detailText(width int) string {
 }
 
 func (m appModel) metadataLines(width int) []string {
-	rows := m.visibleRows()
+	return m.metadataLinesForRows(m.visibleRows(), width)
+}
+
+func (m appModel) metadataLinesForRows(rows []skillsRow, width int) []string {
 	if len(rows) == 0 {
 		var lines []string
 
@@ -557,7 +556,10 @@ func (m appModel) metadataLines(width int) []string {
 }
 
 func (m appModel) previewLines(width int) []string {
-	rows := m.visibleRows()
+	return m.previewLinesForRows(m.visibleRows(), width)
+}
+
+func (m appModel) previewLinesForRows(rows []skillsRow, width int) []string {
 	if len(rows) == 0 {
 		if m.result.Preflight != nil && !m.result.Preflight.CanRunSkills {
 			return []string{
@@ -607,8 +609,9 @@ func (m appModel) previewLines(width int) []string {
 			lines = append(lines, sectionHeaderStyle.Render("Available"), errorStyle.Render("  couldn't scan: "+disc.Error))
 		default: // DiscoveryReady
 			var avail []string
+			installed := m.installedSkillNames(row.groupName)
 			for _, ds := range disc.Skills {
-				if !m.isSkillInstalled(ds.Name, row.groupName) {
+				if !isSkillNameInstalled(ds.Name, installed) {
 					avail = append(avail, ds.Name)
 				}
 			}

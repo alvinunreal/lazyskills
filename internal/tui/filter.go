@@ -6,7 +6,6 @@ import (
 
 	"github.com/alvinunreal/lazyskills/internal/agents"
 	"github.com/alvinunreal/lazyskills/internal/compat"
-	"github.com/alvinunreal/lazyskills/internal/display"
 	"github.com/alvinunreal/lazyskills/internal/model"
 )
 
@@ -24,8 +23,7 @@ func (m appModel) filteredSkills() []*model.Skill {
 			continue
 		}
 		if query != "" {
-			view := display.Skill(sk)
-			haystack := strings.ToLower(view.Name + " " + view.Description)
+			haystack := m.cachedSkillSearchText(sk)
 			if !strings.Contains(haystack, query) {
 				continue
 			}
@@ -42,13 +40,40 @@ func sortSkills(skills []*model.Skill) {
 		if leftGroup != rightGroup {
 			return leftGroup < rightGroup
 		}
-		left := strings.ToLower(display.Skill(skills[i]).Name)
-		right := strings.ToLower(display.Skill(skills[j]).Name)
+		left := strings.ToLower(compat.SanitizeMetadata(skills[i].Name))
+		right := strings.ToLower(compat.SanitizeMetadata(skills[j].Name))
 		if left != right {
 			return left < right
 		}
 		return string(skills[i].Scope) < string(skills[j].Scope)
 	})
+}
+
+func (m *appModel) rebuildSkillSearchText() {
+	if len(m.result.Skills) == 0 {
+		m.skillSearchText = nil
+		return
+	}
+	m.skillSearchText = make(map[*model.Skill]string, len(m.result.Skills))
+	for _, sk := range m.result.Skills {
+		m.skillSearchText[sk] = buildSkillSearchText(sk)
+	}
+}
+
+func (m appModel) cachedSkillSearchText(sk *model.Skill) string {
+	if m.skillSearchText != nil {
+		if text, ok := m.skillSearchText[sk]; ok {
+			return text
+		}
+	}
+	return buildSkillSearchText(sk)
+}
+
+func buildSkillSearchText(sk *model.Skill) string {
+	if sk == nil {
+		return ""
+	}
+	return strings.ToLower(compat.SanitizeMetadata(sk.Name) + " " + compat.SanitizeMetadata(sk.Description))
 }
 
 func (m appModel) agentFilters() []string {

@@ -40,12 +40,13 @@ func (m *appModel) syncViewport() {
 		// For metadata viewport:
 		m.metadataViewport.Width = max(1, rightWidth-4)
 		m.metadataViewport.Height = max(1, topHeight-2)
-		m.metadataViewport.SetContent(strings.Join(m.metadataLines(rightWidth-4), "\n"))
+		rows := m.visibleRows()
+		m.metadataViewport.SetContent(strings.Join(m.metadataLinesForRows(rows, rightWidth-4), "\n"))
 
 		// For preview viewport:
 		m.previewViewport.Width = max(1, rightWidth-4)
 		m.previewViewport.Height = max(1, bottomHeight-2)
-		m.previewViewport.SetContent(strings.Join(m.previewLines(rightWidth-4), "\n"))
+		m.previewViewport.SetContent(strings.Join(m.previewLinesForRows(rows, rightWidth-4), "\n"))
 	}
 	m.clampViewportOffset()
 }
@@ -91,9 +92,10 @@ func (m appModel) availableCount(groupName string) int {
 	if !ok || disc.Status != DiscoveryReady {
 		return 0
 	}
+	installed := m.installedSkillNames(groupName)
 	n := 0
 	for _, ds := range disc.Skills {
-		if !m.isSkillInstalled(ds.Name, groupName) {
+		if !isSkillNameInstalled(ds.Name, installed) {
 			n++
 		}
 	}

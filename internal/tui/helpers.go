@@ -321,12 +321,16 @@ func truncateTitle(s string, width int) string {
 	return string(runes[:width-1]) + "…"
 }
 
-func (m appModel) isSkillInstalled(name string, group string) bool {
-	norm := compat.NormalizeName(name)
+func (m appModel) installedSkillNames(group string) map[string]bool {
+	installed := make(map[string]bool)
 	for _, sk := range m.result.Skills {
-		if listGroupLabel(sk) == group && compat.NormalizeName(sk.Name) == norm {
-			return true
+		if listGroupLabel(sk) == group {
+			installed[compat.NormalizeName(sk.Name)] = true
 		}
 	}
-	return false
+	return installed
+}
+
+func isSkillNameInstalled(name string, installed map[string]bool) bool {
+	return installed[compat.NormalizeName(name)]
 }
