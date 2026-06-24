@@ -466,9 +466,12 @@ func listGroupLabel(skill *model.Skill) string {
 }
 
 type skillSourceInfo struct {
-	Source string
-	Folder string
-	Ref    string
+	Source     string
+	SourceURL  string
+	Folder     string
+	Ref        string
+	SourceType string
+	Hash       string
 }
 
 func sourceInfo(skill *model.Skill) skillSourceInfo {
@@ -494,7 +497,13 @@ func localSourceInfo(lock *model.LocalLockEntry) skillSourceInfo {
 	if lock == nil {
 		return skillSourceInfo{}
 	}
-	return skillSourceInfo{Source: compat.SanitizeMetadata(lock.Source), Folder: skillFolder(lock.SkillPath), Ref: compat.SanitizeMetadata(lock.Ref)}
+	return skillSourceInfo{
+		Source:     compat.SanitizeMetadata(lock.Source),
+		Folder:     skillFolder(lock.SkillPath),
+		Ref:        compat.SanitizeMetadata(lock.Ref),
+		SourceType: compat.SanitizeMetadata(lock.SourceType),
+		Hash:       compat.SanitizeMetadata(lock.ComputedHash),
+	}
 }
 
 func globalSourceInfo(lock *model.GlobalLockEntry) skillSourceInfo {
@@ -505,7 +514,14 @@ func globalSourceInfo(lock *model.GlobalLockEntry) skillSourceInfo {
 	if source == "" {
 		source = lock.SourceURL
 	}
-	return skillSourceInfo{Source: compat.SanitizeMetadata(source), Folder: skillFolder(lock.SkillPath), Ref: compat.SanitizeMetadata(lock.Ref)}
+	return skillSourceInfo{
+		Source:     compat.SanitizeMetadata(source),
+		SourceURL:  compat.SanitizeMetadata(lock.SourceURL),
+		Folder:     skillFolder(lock.SkillPath),
+		Ref:        compat.SanitizeMetadata(lock.Ref),
+		SourceType: compat.SanitizeMetadata(lock.SourceType),
+		Hash:       compat.SanitizeMetadata(lock.SkillFolderHash),
+	}
 }
 
 func skillFolder(skillPath string) string {
@@ -521,6 +537,12 @@ func sourceDetailLines(skill *model.Skill, width int) []string {
 		return nil
 	}
 	lines := []string{formatMetaLine("Source:", info.Source, width)}
+	if info.SourceURL != "" && info.SourceURL != info.Source {
+		lines = append(lines, formatMetaLine("Source URL:", info.SourceURL, width))
+	}
+	if info.SourceType != "" {
+		lines = append(lines, formatMetaLine("Source type:", info.SourceType, width))
+	}
 	if info.Folder != "" {
 		lines = append(lines, formatMetaLine("Folder:", info.Folder, width))
 	}
