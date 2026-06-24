@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/alvinunreal/lazyskills/internal/model"
@@ -70,6 +71,143 @@ func TestClaudeProjectDir(t *testing.T) {
 	}
 	if got := res.Skills[0].ObservedPaths[0].Agent; got != "claude-code" {
 		t.Fatalf("expected claude-code observation, got %s", got)
+	}
+}
+
+func TestOpenCodeNativeProjectDir(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+
+	t.Run("native path is tracked", func(t *testing.T) {
+		writeSkill(t, filepath.Join(cwd, ".opencode", "skills", "build"), "Build", "Build code")
+
+		res, err := Run(cwd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Skills) != 1 {
+			t.Fatalf("expected 1 skill, got %d", len(res.Skills))
+		}
+		sk := res.Skills[0]
+		seen := map[string]bool{}
+		for _, p := range sk.ObservedPaths {
+			if p.Scope == model.ScopeProject {
+				seen[p.Agent] = true
+			}
+		}
+		if !seen["opencode"] {
+			t.Fatalf("expected opencode to observe native .opencode/skills, got %#v", sk.ObservedPaths)
+		}
+		if !agentState(res.Agents, "opencode").ProjectDirExists {
+			t.Fatalf("expected opencode project dir to be marked present, got %#v", agentState(res.Agents, "opencode"))
+		}
+		if got := agentState(res.Agents, "opencode").ProjectDir; got != filepath.Join(cwd, ".opencode", "skills") {
+			t.Fatalf("expected opencode project dir to point at native path, got %q", got)
+		}
+	})
+
+	t.Run("legacy-only path does not imply native path exists", func(t *testing.T) {
+		legacyOnlyCwd := t.TempDir()
+		writeSkill(t, filepath.Join(legacyOnlyCwd, ".agents", "skills", "build"), "Build", "Legacy build")
+
+		res, err := Run(legacyOnlyCwd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if agentState(res.Agents, "opencode").ProjectDirExists {
+			t.Fatalf("expected opencode native project dir existence to ignore legacy-only path, got %#v", agentState(res.Agents, "opencode"))
+		}
+	})
+}
+
+func TestOpenCodeNativeRecordOverridesLegacyAliasMetadata(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+	writeSkill(t, filepath.Join(cwd, ".agents", "skills", "build"), "Build", "Legacy build")
+	writeSkill(t, filepath.Join(cwd, ".opencode", "skills", "build"), "Build", "Native build")
+
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sk *model.Skill
+	for i := range res.Skills {
+		if res.Skills[i].Name == "Build" && res.Skills[i].Scope == model.ScopeProject {
+			sk = &res.Skills[i]
+			break
+		}
+	}
+	if sk == nil {
+		t.Fatalf("expected merged Build skill, got %#v", res.Skills)
+	}
+	if sk.CanonicalPath != filepath.Join(cwd, ".opencode", "skills", "build") {
+		t.Fatalf("expected canonical path to prefer native OpenCode, got %q", sk.CanonicalPath)
+	}
+	if sk.SkillPath != filepath.Join(cwd, ".opencode", "skills", "build", "SKILL.md") {
+		t.Fatalf("expected skill path to prefer native OpenCode, got %q", sk.SkillPath)
+	}
+	if !strings.Contains(sk.Preview, "Native build") || strings.Contains(sk.Preview, "Legacy build") {
+		t.Fatalf("expected preview to come from native OpenCode record, got %q", sk.Preview)
+	}
+}
+
+func TestOpenCodeNativeDiagnosticsSurviveLegacyAlias(t *testing.T) {
+	tests := []struct {
+		name       string
+		setupNative func(t *testing.T, cwd string)
+		issueType  string
+	}{
+		{
+			name: "missing_skill_md",
+			setupNative: func(t *testing.T, cwd string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(cwd, ".opencode", "skills", "build"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			issueType: "missing_skill_md",
+		},
+		{
+			name: "invalid_frontmatter",
+			setupNative: func(t *testing.T, cwd string) {
+				t.Helper()
+				dir := filepath.Join(cwd, ".opencode", "skills", "build")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: 123\n---\nbody"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			issueType: "invalid_frontmatter",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withHome(t)
+			cwd := t.TempDir()
+			writeSkill(t, filepath.Join(cwd, ".agents", "skills", "build"), "Build", "Legacy build")
+			tc.setupNative(t, cwd)
+
+			res, err := Run(cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var sk *model.Skill
+			for i := range res.Skills {
+				if res.Skills[i].Name == "Build" && res.Skills[i].Scope == model.ScopeProject {
+					sk = &res.Skills[i]
+					break
+				}
+			}
+			if sk == nil {
+				t.Fatalf("expected merged Build skill, got %#v", res.Skills)
+			}
+			if !hasIssue(sk.HealthIssues, tc.issueType) {
+				t.Fatalf("expected %s issue, got %#v", tc.issueType, sk.HealthIssues)
+			}
+		})
 	}
 }
 
