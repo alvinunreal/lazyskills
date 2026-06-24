@@ -15,6 +15,7 @@ import (
 	"github.com/alvinunreal/lazyskills/internal/compat"
 	"github.com/alvinunreal/lazyskills/internal/locks"
 	"github.com/alvinunreal/lazyskills/internal/model"
+	"github.com/alvinunreal/lazyskills/internal/registry"
 	"github.com/alvinunreal/lazyskills/internal/runner"
 	"github.com/alvinunreal/lazyskills/internal/selfupdate"
 )
@@ -61,6 +62,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.clampSelection()
+		m.clampSourceModalSelection()
 		m.pruneSelected()
 		m.actionResult = nil
 		m.syncViewport()
@@ -78,6 +80,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.discovery = make(map[string]SourceDiscovery)
 		}
 		m.discovery[msg.groupName] = disc
+		m.clampSourceModalSelection()
 		m.clampSelection()
 		m.syncViewport()
 	case actionResultMsg:
@@ -116,6 +119,19 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateError = nil
 		}
 		m.syncViewport()
+	case registryDebounceMsg:
+		if msg.generation == m.registryGeneration {
+			m.registryLoading = true
+			return m, m.searchRegistryCmd(msg.query, msg.generation)
+		}
+	case registrySearchMsg:
+		if msg.generation == m.registryGeneration {
+			m.registryLoading = false
+			m.registryResults = msg.results
+			m.registryError = msg.err
+			m.registrySelected = 0
+			m.syncViewport()
+		}
 	case tea.KeyMsg:
 		key := msg.String()
 		var postKeyCmd tea.Cmd
@@ -123,6 +139,156 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if key == "ctrl+c" || key == "q" {
 				return m, tea.Quit
 			}
+			return m, nil
+		}
+		if m.registryModal {
+			switch key {
+			case "esc":
+				m.registryModal = false
+				m.registryQuery = ""
+				m.registryResults = nil
+				m.registryError = nil
+				m.registryLoading = false
+				m.syncViewport()
+				return m, nil
+			case "q":
+				if m.registryFocusList {
+					m.registryModal = false
+					m.registryQuery = ""
+					m.registryResults = nil
+					m.registryError = nil
+					m.registryLoading = false
+					m.syncViewport()
+					return m, nil
+				}
+				// Otherwise let it flow down to type 'q' in search query
+			case "ctrl+c":
+				return m, tea.Quit
+			case "tab":
+				m.registryFocusList = !m.registryFocusList
+				m.syncViewport()
+				return m, nil
+			case "up", "k":
+				if len(m.registryResults) > 0 {
+					m.registrySelected--
+					if m.registrySelected < 0 {
+						m.registrySelected = len(m.registryResults) - 1
+					}
+					m.syncViewport()
+				}
+				return m, nil
+			case "down", "j":
+				if len(m.registryResults) > 0 {
+					m.registrySelected++
+					if m.registrySelected >= len(m.registryResults) {
+						m.registrySelected = 0
+					}
+					m.syncViewport()
+				}
+				return m, nil
+			case "enter":
+				if !m.registryFocusList {
+					if len(m.registryQuery) >= 2 && (m.registryError != nil || len(m.registryResults) == 0) {
+						m.registryGeneration++
+						m.registryLoading = true
+						m.syncViewport()
+						return m, m.searchRegistryCmd(m.registryQuery, m.registryGeneration)
+					}
+					if len(m.registryResults) > 0 {
+						m.registryFocusList = true
+						m.syncViewport()
+					}
+					return m, nil
+				}
+				// List is focused: start project install confirmation
+				if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
+					s := m.registryResults[m.registrySelected]
+					status, checkMsg := m.checkRegistrySkillStatus(s)
+					if status == StatusInstalled || s.Invalid {
+						// Do not install
+						return m, nil
+					}
+					// Build preview
+					previews := actions.ForAvailableSkillWithOptions(s.Source, actions.InstallOptions{
+						DisplayName: s.DisplayName,
+						Slug:        s.Slug,
+						Global:      false,
+					})
+					if len(previews) > 0 && previews[0].Available {
+						m.registryModal = false
+						armed := previews[0]
+						if status == StatusSimilarInstalled {
+							armed.Description += " (Warning: A similar skill named '" + checkMsg + "' is already installed)."
+						}
+						m.pendingAction = &armed
+						m.confirming = true
+						m.confirmInput = ""
+						m.confirmError = ""
+						m.syncViewport()
+						return m, nil
+					}
+				}
+				return m, nil
+			case "g":
+				if m.registryFocusList {
+					// list focused: start global install confirmation
+					if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
+						s := m.registryResults[m.registrySelected]
+						status, checkMsg := m.checkRegistrySkillStatus(s)
+						if status == StatusInstalled || s.Invalid {
+							// Do not install
+							return m, nil
+						}
+						previews := actions.ForAvailableSkillWithOptions(s.Source, actions.InstallOptions{
+							DisplayName: s.DisplayName,
+							Slug:        s.Slug,
+							Global:      true,
+						})
+						if len(previews) > 0 && previews[0].Available {
+							m.registryModal = false
+							armed := previews[0]
+							if status == StatusSimilarInstalled {
+								armed.Description += " (Warning: A similar skill named '" + checkMsg + "' is already installed)."
+							}
+							m.pendingAction = &armed
+							m.confirming = true
+							m.confirmInput = ""
+							m.confirmError = ""
+							m.syncViewport()
+							return m, nil
+						}
+					}
+					return m, nil
+				}
+				// fallback: typing 'g'
+			}
+
+			// If input is focused and it's a typing key
+			if !m.registryFocusList {
+				switch key {
+				case "backspace", "ctrl+h":
+					if len(m.registryQuery) > 0 {
+						m.registryQuery = m.registryQuery[:len(m.registryQuery)-1]
+					}
+				default:
+					if len(key) == 1 {
+						m.registryQuery += key
+					}
+				}
+				m.registrySelected = 0
+				m.registryGeneration++
+				if len(m.registryQuery) >= 2 {
+					m.syncViewport()
+					return m, scheduleRegistrySearch(m.registryQuery, m.registryGeneration)
+				} else {
+					m.registryResults = nil
+					m.registryError = nil
+					m.registryLoading = false
+					m.syncViewport()
+					return m, nil
+				}
+			}
+
 			return m, nil
 		}
 		if m.appUpdateModal {
@@ -146,19 +312,53 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.detailModal {
+			if m.modalSource != "" && m.modalSearching {
+				switch key {
+				case "esc", "enter":
+					m.modalSearching = false
+					m.syncViewport()
+					return m, nil
+				case "ctrl+c":
+					return m, tea.Quit
+				case "backspace", "ctrl+h":
+					if len(m.modalSearch) > 0 {
+						m.modalSearch = m.modalSearch[:len(m.modalSearch)-1]
+						m.modalSelected = 0
+					}
+				default:
+					if len(key) == 1 {
+						m.modalSearch += key
+						m.modalSelected = 0
+					}
+				}
+				m.clampSourceModalSelection()
+				m.ensureSourceModalSelectionVisible()
+				m.syncViewport()
+				return m, nil
+			}
 			switch key {
 			case "esc", "q":
 				m.detailModal = false
 				m.modalSource = ""
+				m.modalSearch = ""
+				m.modalSearching = false
+				m.modalSelected = 0
 				m.syncViewport()
 			case "ctrl+c":
 				return m, tea.Quit
+			case "/":
+				if m.modalSource != "" {
+					m.modalSearching = true
+					m.syncViewport()
+				}
 			case "o":
 				if m.modalSource != "" {
 					child, ok := m.currentModalSelectedChild()
 					if ok && !child.isAvailable {
 						m.detailModal = false
 						m.modalSource = ""
+						m.modalSearch = ""
+						m.modalSearching = false
 						return m.startSkillActionByID(child.skill, "open_skill")
 					}
 				} else {
@@ -171,6 +371,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if ok && !child.isAvailable {
 						m.detailModal = false
 						m.modalSource = ""
+						m.modalSearch = ""
+						m.modalSearching = false
 						return m.startSkillActionByID(child.skill, "reinstall_update")
 					}
 				}
@@ -180,6 +382,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if ok && !child.isAvailable {
 						m.detailModal = false
 						m.modalSource = ""
+						m.modalSearch = ""
+						m.modalSearching = false
 						return m.startSkillActionByID(child.skill, "remove")
 					}
 				}
@@ -201,6 +405,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								}
 								m.detailModal = false
 								m.modalSource = ""
+								m.modalSearch = ""
+								m.modalSearching = false
 								if a.RequiresConfirm {
 									armed := a
 									m.pendingAction = &armed
@@ -215,6 +421,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						} else {
 							m.detailModal = false
 							m.modalSource = ""
+							m.modalSearch = ""
+							m.modalSearching = false
 							return m.startSkillActionByID(child.skill, "open_skill")
 						}
 					}
@@ -228,13 +436,14 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "down", "j":
 				if m.modalSource != "" {
-					childRows := m.modalChildRows(m.modalSource)
+					childRows := m.filteredModalChildRows(m.modalSource)
 					if len(childRows) > 0 {
 						m.modalSelected++
 						if m.modalSelected >= len(childRows) {
 							m.modalSelected = len(childRows) - 1
 						}
 					}
+					m.clampSourceModalSelection()
 					m.ensureSourceModalSelectionVisible()
 					m.syncViewport()
 				} else {
@@ -243,13 +452,14 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "up", "k":
 				if m.modalSource != "" {
-					childRows := m.modalChildRows(m.modalSource)
+					childRows := m.filteredModalChildRows(m.modalSource)
 					if len(childRows) > 0 {
 						m.modalSelected--
 						if m.modalSelected < 0 {
 							m.modalSelected = 0
 						}
 					}
+					m.clampSourceModalSelection()
 					m.ensureSourceModalSelectionVisible()
 					m.syncViewport()
 				} else {
@@ -268,6 +478,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.modalSource != "" {
 					m.modalSelected = 0
 					m.viewport.GotoTop()
+					m.clampSourceModalSelection()
 					m.syncViewport()
 				} else {
 					m.viewport.GotoTop()
@@ -348,6 +559,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc", "c":
 				m.commands = false
 				m.modalSource = ""
+				m.modalSearch = ""
+				m.modalSearching = false
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "up", "k":
@@ -428,6 +641,9 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateSuccess = false
 			m.updateError = nil
 			m.syncViewport()
+		case "n":
+			m = m.openRegistryModal()
+			m.syncViewport()
 		case "c":
 			m.commands = !m.commands
 			m.action = 0
@@ -446,6 +662,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if row.isHeader {
 					m.detailModal = true
 					m.modalSource = row.groupName
+					m.modalSearch = ""
+					m.modalSearching = false
 					m.modalSelected = 0
 					m.detailsFocused = true
 					m.viewport.GotoTop()
@@ -465,6 +683,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.detailModal = true
 					m.modalSource = ""
+					m.modalSearch = ""
+					m.modalSearching = false
 					m.modalSelected = 0
 					m.detailsFocused = true
 					m.viewport.GotoTop()
@@ -715,6 +935,7 @@ func (m appModel) currentActions() []actions.CommandPreview {
 			}
 			return m.appendEnableDisableActions(actions.ForSkill(child.skill), child.skill)
 		}
+		return nil
 	}
 	selected := m.selectedSkills()
 	if len(selected) > 0 {
@@ -832,11 +1053,72 @@ func (m appModel) modalChildRows(groupName string) []modalChildRow {
 	return rows
 }
 
+func (m appModel) filteredModalChildRows(groupName string) []modalChildRow {
+	rows := m.modalChildRows(groupName)
+	query := strings.ToLower(strings.TrimSpace(compat.SanitizeMetadata(m.modalSearch)))
+	if query == "" {
+		return rows
+	}
+	filtered := make([]modalChildRow, 0, len(rows))
+	for _, row := range rows {
+		if modalChildRowMatches(row, query) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func modalChildRowMatches(row modalChildRow, query string) bool {
+	return strings.Contains(sourceModalChildSearchText(row), query)
+}
+
+func sourceModalChildSearchText(row modalChildRow) string {
+	parts := []string{}
+	if row.skill != nil {
+		parts = append(parts,
+			row.skill.Name,
+			row.skill.Description,
+			row.skill.CanonicalPath,
+			row.skill.SkillPath,
+		)
+		if info := sourceInfo(row.skill); info.Source != "" {
+			parts = append(parts, info.Source, info.Folder, info.Ref)
+		}
+	}
+	if row.discoveredSkill != nil {
+		parts = append(parts,
+			row.discoveredSkill.Name,
+			row.discoveredSkill.Description,
+			row.discoveredSkill.Source,
+			row.discoveredSkill.SkillPath,
+			row.discoveredSkill.Preview,
+		)
+	}
+	return strings.ToLower(compat.SanitizeMetadata(strings.Join(parts, " ")))
+}
+
+func (m *appModel) clampSourceModalSelection() {
+	if m.modalSource == "" {
+		return
+	}
+	childRows := m.filteredModalChildRows(m.modalSource)
+	if len(childRows) == 0 {
+		m.modalSelected = 0
+		return
+	}
+	if m.modalSelected < 0 {
+		m.modalSelected = 0
+	}
+	if m.modalSelected >= len(childRows) {
+		m.modalSelected = len(childRows) - 1
+	}
+}
+
 func (m appModel) currentModalSelectedChild() (modalChildRow, bool) {
 	if m.modalSource == "" {
 		return modalChildRow{}, false
 	}
-	childRows := m.modalChildRows(m.modalSource)
+	childRows := m.filteredModalChildRows(m.modalSource)
 	if len(childRows) == 0 || m.modalSelected < 0 || m.modalSelected >= len(childRows) {
 		return modalChildRow{}, false
 	}
@@ -904,6 +1186,12 @@ func requiresExactConfirmation(action actions.CommandPreview) bool {
 }
 
 func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.Cmd) {
+	if action.Exec.Internal == "find_new_skills" {
+		m.commands = false
+		m = m.openRegistryModal()
+		m.syncViewport()
+		return m, nil
+	}
 	if action.ID == "source_discover" {
 		m.commands = false
 		m.actionResult = nil
@@ -1080,6 +1368,18 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 		partialSuccess := cleanupLockAfterRemove(action, m.cwd, &result)
 		return actionResultMsg{result: result, mutates: action.Mutates, partialSuccess: partialSuccess}
 	}
+}
+
+func (m appModel) openRegistryModal() appModel {
+	m.registryModal = true
+	m.registryQuery = ""
+	m.registryResults = nil
+	m.registrySelected = 0
+	m.registryError = nil
+	m.registryLoading = false
+	m.registryFocusList = false
+	m.registryGeneration++
+	return m
 }
 
 func cleanupLockAfterRemove(action actions.CommandPreview, cwd string, result *runner.Result) bool {
@@ -1378,4 +1678,24 @@ func (m appModel) applyUpdateCmd() tea.Cmd {
 		err := selfupdate.Apply(ctx, m.updatePlan, nil)
 		return appUpdateResultMsg{err: err}
 	}
+}
+
+func (m appModel) searchRegistryCmd(query string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		client := registry.NewClient()
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		results, err := client.Search(ctx, query, 10)
+		return registrySearchMsg{
+			generation: gen,
+			results:    results,
+			err:        err,
+		}
+	}
+}
+
+func scheduleRegistrySearch(query string, generation int) tea.Cmd {
+	return tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg {
+		return registryDebounceMsg{generation: generation, query: query}
+	})
 }

@@ -37,6 +37,7 @@ LazySkills is a blazing-fast terminal UI for managing agent skills. It gives you
 - **Preview before you act** - inspect metadata, rendered skill content, and the exact command LazySkills is about to run.
 - **Safe skill actions** - open, reinstall/update, remove, prune orphaned locks, or run bulk updates/removals with confirmation prompts.
 - **Discover more from a source** - scan local checkouts or GitHub skill sources to find skills you have not installed yet.
+- **Find and install new skills** - search skills.sh from inside LazySkills, preview the install command, then install to project or global scope with confirmation.
 
 ## 🛠️ Install
 
@@ -89,12 +90,19 @@ Useful keys:
 | `f` | Toggle project/global/all scopes |
 | `enter` | Open details for a skill or source |
 | `c` | Show available actions |
+| `n` | Find new skills from skills.sh |
 | `space` | Select a skill for bulk actions |
 | `u` | Reinstall/update selected skill |
 | `x` | Remove selected skill |
 | `?` | Show the full keymap |
 
 LazySkills previews actions before running them, and destructive actions require confirmation.
+
+For agent-friendly registry search without opening the TUI:
+
+```bash
+lazyskills find --json "browser automation"
+```
 
 ## 🔄 Updates
 

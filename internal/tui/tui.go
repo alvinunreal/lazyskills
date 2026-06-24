@@ -10,6 +10,7 @@ import (
 
 	"github.com/alvinunreal/lazyskills/internal/actions"
 	"github.com/alvinunreal/lazyskills/internal/model"
+	"github.com/alvinunreal/lazyskills/internal/registry"
 	"github.com/alvinunreal/lazyskills/internal/runner"
 	"github.com/alvinunreal/lazyskills/internal/scan"
 	"github.com/alvinunreal/lazyskills/internal/selfupdate"
@@ -90,6 +91,8 @@ type appModel struct {
 	skillSearchText         map[*model.Skill]string
 	modalSelected           int
 	modalSource             string
+	modalSearch             string
+	modalSearching          bool
 	pendingG                bool                    // saw a lone "g"; a second "g" jumps to top
 	pendingAction           *actions.CommandPreview // action awaiting confirm (decoupled from selection)
 	updatePlan              *selfupdate.UpdatePlan
@@ -98,6 +101,14 @@ type appModel struct {
 	updatingApp             bool
 	updateSuccess           bool
 	updateError             error
+	registryModal           bool
+	registryQuery           string
+	registryLoading         bool
+	registryResults         []registry.Skill
+	registrySelected        int
+	registryError           error
+	registryGeneration      int
+	registryFocusList       bool
 }
 
 type paneLayout struct {
@@ -180,6 +191,17 @@ type updatePlanMsg struct {
 
 type appUpdateResultMsg struct {
 	err error
+}
+
+type registryDebounceMsg struct {
+	generation int
+	query      string
+}
+
+type registrySearchMsg struct {
+	generation int
+	results    []registry.Skill
+	err        error
 }
 
 func Run(cwd string) error {

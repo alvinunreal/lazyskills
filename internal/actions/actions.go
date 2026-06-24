@@ -111,6 +111,18 @@ func AppLevelActionsWithResolver(resolve SkillsResolver) []CommandPreview {
 	gateAvailability(&updatePreview, available, reason)
 	previews = append(previews, updatePreview)
 
+	// find new skills from skills.sh
+	registryPreview := CommandPreview{
+		ID:              "find_new_skills",
+		Title:           "Find new skills from skills.sh",
+		Description:     "Search skills.sh registry inside LazySkills.",
+		Command:         "find new skills from skills.sh",
+		Exec:            ExecSpec{Internal: "find_new_skills"},
+		Available:       true,
+		RequiresConfirm: false,
+	}
+	previews = append(previews, registryPreview)
+
 	return previews
 }
 
@@ -140,12 +152,41 @@ func ForAvailableSkill(source, name string) []CommandPreview {
 	return ForAvailableSkillWithResolver(source, name, ResolveSkillsCommand)
 }
 
-func ForAvailableSkillWithResolver(source, name string, resolve SkillsResolver) []CommandPreview {
-	if !safeExecValue(source) || strings.HasPrefix(source, "-") {
-		return []CommandPreview{unavailablePreview("Install selected skill", "source is empty, option-like, or contains unsafe characters")}
+type InstallOptions struct {
+	DisplayName string
+	Slug        string
+	Global      bool
+}
+
+func ForAvailableSkillWithOptions(source string, opts InstallOptions) []CommandPreview {
+	return ForAvailableSkillWithOptionsAndResolver(source, opts, ResolveSkillsCommand)
+}
+
+func ForAvailableSkillWithOptionsAndResolver(source string, opts InstallOptions, resolve SkillsResolver) []CommandPreview {
+	title := "Install selected skill"
+	if opts.DisplayName != "" {
+		if opts.Global {
+			title = fmt.Sprintf("Install %s globally", opts.DisplayName)
+		} else {
+			title = fmt.Sprintf("Install %s to project", opts.DisplayName)
+		}
+	} else {
+		if opts.Global {
+			title = "Install selected skill globally"
+		} else {
+			title = "Install selected skill"
+		}
 	}
-	if !safeExecValue(name) || strings.HasPrefix(name, "-") {
-		return []CommandPreview{unavailablePreview("Install selected skill", "skill name is empty, option-like, or contains unsafe characters")}
+
+	if !safeExecValue(source) || strings.HasPrefix(source, "-") {
+		return []CommandPreview{unavailablePreview(title, "source is empty, option-like, or contains unsafe characters")}
+	}
+	if !safeExecValue(opts.Slug) || strings.HasPrefix(opts.Slug, "-") {
+		reason := "skill slug is empty, option-like, or contains unsafe characters"
+		if opts.DisplayName == "" {
+			reason = "skill name is empty, option-like, or contains unsafe characters"
+		}
+		return []CommandPreview{unavailablePreview(title, reason)}
 	}
 
 	if resolve == nil {
@@ -155,11 +196,27 @@ func ForAvailableSkillWithResolver(source, name string, resolve SkillsResolver) 
 	program, baseArgs := resolve()
 
 	args := append([]string{}, baseArgs...)
-	args = append(args, "add", source, "--skill", name, "--yes")
+	args = append(args, "add", source, "--skill", opts.Slug, "--yes")
+	if opts.Global {
+		args = append(args, "-g")
+	}
 
-	preview := newPreview("install_skill", "Install selected skill", program, args, "Install this skill to project.", true, true, false, "yes")
+	desc := "Install this skill to project."
+	if opts.Global {
+		desc = "Install this skill globally."
+	}
+
+	preview := newPreview("install_skill", title, program, args, desc, true, true, false, "yes")
 	gateAvailability(&preview, available, reason)
 	return []CommandPreview{preview}
+}
+
+func ForAvailableSkillWithResolver(source, name string, resolve SkillsResolver) []CommandPreview {
+	return ForAvailableSkillWithOptionsAndResolver(source, InstallOptions{
+		Slug:        name,
+		DisplayName: "",
+		Global:      false,
+	}, resolve)
 }
 
 func ForSkillWithResolver(sk *model.Skill, resolve SkillsResolver) []CommandPreview {
