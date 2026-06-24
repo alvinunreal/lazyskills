@@ -222,7 +222,7 @@ func (m appModel) listPane(height, width int) string {
 			headerText := affordance + row.groupName
 			hint := ""
 			if n := m.availableCount(row.groupName); n > 0 {
-				hint = fmt.Sprintf("  +%d available", n)
+				hint = fmt.Sprintf("  +%d new", n)
 			}
 			if rowIndex == selectedRow {
 				line = selectedStyle.Render(truncate(headerText+hint, width))
@@ -902,11 +902,10 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 
 	availHeader := sectionHeaderStyle.Render("Available Skills:")
 	disc, ok := m.discovery[groupName]
-	if ok && disc.Status == DiscoveryReady && !disc.ScannedAt.IsZero() {
+	if ok && !disc.ScannedAt.IsZero() {
 		availHeader += "  " + dimStyle.Render("scanned "+humanizeSince(disc.ScannedAt))
 	}
 	lines = append(lines, availHeader)
-	_, _, isRemote := parseRemoteGitHubSource(groupName)
 	if !ok {
 		discoverable, reason := m.isSourceDiscoverable(groupName)
 		if !discoverable {
@@ -915,19 +914,15 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 			lines = append(lines, dimStyle.Render("  Press d to scan this source."))
 		}
 	} else {
-		switch disc.Status {
-		case DiscoveryLoading:
-			if isRemote {
-				lines = append(lines, dimStyle.Render("  Scanning…"))
-			} else {
-				lines = append(lines, dimStyle.Render("  Scanning…"))
-			}
-		case DiscoveryFailed:
+		if disc.Status == DiscoveryLoading {
+			lines = append(lines, dimStyle.Render("  Scanning…"))
+		} else if disc.Status == DiscoveryFailed {
 			lines = append(lines, errorStyle.Render("  Couldn't scan: "+disc.Error))
-		case DiscoveryReady:
+		}
+		if disc.Status == DiscoveryReady || len(disc.Skills) > 0 {
 			availableCount := 0
 			for idx, cr := range childRows {
-				if cr.isAvailable {
+				if cr.isAvailable && !cr.isNew {
 					availableCount++
 					if idx == m.modalSelected {
 						label := fmt.Sprintf("%s [available]", cr.discoveredSkill.Name)
@@ -938,8 +933,28 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 					}
 				}
 			}
-			if availableCount == 0 {
+			newCount := 0
+			for _, cr := range childRows {
+				if cr.isAvailable && cr.isNew {
+					newCount++
+				}
+			}
+			if availableCount == 0 && newCount == 0 {
 				lines = append(lines, "  All skills from this source are installed.")
+			}
+			if newCount > 0 {
+				lines = append(lines, "", sectionHeaderStyle.Render("New Since Last Scan:"))
+				for idx, cr := range childRows {
+					if cr.isAvailable && cr.isNew {
+						if idx == m.modalSelected {
+							label := fmt.Sprintf("%s [new]", cr.discoveredSkill.Name)
+							lines = append(lines, selectedStyle.Render(fmt.Sprintf("› %s", label)))
+						} else {
+							label := fmt.Sprintf("%s %s", cr.discoveredSkill.Name, warningStyle.Render("[new]"))
+							lines = append(lines, fmt.Sprintf("  %s", label))
+						}
+					}
+				}
 			}
 		}
 	}
@@ -952,10 +967,16 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 
 		if selectedChild.isAvailable {
 			ds := selectedChild.discoveredSkill
+			statusText := "available"
+			label := ds.Name + " [available]"
+			if selectedChild.isNew {
+				statusText = "new since last scan"
+				label = ds.Name + " [new]"
+			}
 			lines = append(lines,
-				titleStyle.Render(ds.Name+" [available]"),
+				titleStyle.Render(label),
 				"",
-				formatMetaLine("Status:", lipgloss.NewStyle().Foreground(lipgloss.Color("114")).Render("available"), width),
+				formatMetaLine("Status:", lipgloss.NewStyle().Foreground(lipgloss.Color("114")).Render(statusText), width),
 				formatMetaLine("Source:", ds.Source, width),
 			)
 			if ds.SkillPath != "" {
@@ -1296,6 +1317,9 @@ func (m appModel) footerText(width int) string {
 				if discoverable, _ := m.isSourceDiscoverable(row.groupName); discoverable {
 					parts = append(parts, "d scan")
 				}
+				if len(m.trackedSourceGroups()) > 0 {
+					parts = append(parts, "D scan all")
+				}
 				parts = append(parts, "c actions", "? help")
 				text = strings.Join(parts, " · ")
 			} else {
@@ -1383,6 +1407,7 @@ func (m appModel) helpModalOverlay(layout appLayout) string {
 		"  u / x           Quick reinstall-update / remove for selection",
 		"  U               Check/run LazySkills application update",
 		"  d               Check local or remote source for available skills (Source row)",
+		"  D               Scan all trusted sources for new skills",
 		"  r               Refresh scan snapshot",
 		"",
 		sectionHeaderStyle.Render("Safety & Modals:"),

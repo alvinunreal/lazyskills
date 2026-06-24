@@ -115,17 +115,17 @@ func (m appModel) visibleRows() []skillsRow {
 	return rows
 }
 
-// availableCount reports how many discovered-but-not-installed skills a source
-// group has, once it has been scanned. Zero when not yet scanned.
+// availableCount reports how many uninstalled skills are new since the last
+// radar scan for a source group. Zero when not yet scanned.
 func (m appModel) availableCount(groupName string) int {
 	disc, ok := m.discovery[groupName]
-	if !ok || disc.Status != DiscoveryReady {
+	if !ok || len(disc.Skills) == 0 {
 		return 0
 	}
 	installed := m.installedSkillNames(groupName)
 	n := 0
 	for _, ds := range disc.Skills {
-		if !isSkillNameInstalled(ds.Name, installed) {
+		if ds.NewSinceLastScan && !isSkillNameInstalled(ds.Name, installed) {
 			n++
 		}
 	}
@@ -362,7 +362,7 @@ func (m appModel) selectedSkills() []*model.Skill {
 
 func (m appModel) sourceGroupSkills(group string) []*model.Skill {
 	var out []*model.Skill
-	for _, skill := range m.filteredSkills() {
+	for _, skill := range m.result.Skills {
 		if listGroupLabel(skill) == group {
 			out = append(out, skill)
 		}
