@@ -3,13 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/alvinunreal/lazyskills/internal/buildinfo"
+	"github.com/alvinunreal/lazyskills/internal/registry"
 	"github.com/alvinunreal/lazyskills/internal/selfupdate"
 )
 
@@ -120,5 +124,74 @@ func TestCLIUpdate(t *testing.T) {
 	}
 	if strings.Contains(out, "Already up to date.") {
 		t.Error("should not print Already up to date when update checks are disabled")
+	}
+}
+
+func TestCLIFind(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"skills": [
+				{"id": "owner/one/skill-1", "skillId": "skill-1", "name": "Skill One", "installs": 10, "source": "github.com/one"}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("SKILLS_API_URL", server.URL)
+
+	oldOut := os.Stdout
+	defer func() { os.Stdout = oldOut }()
+
+	captureStdout := func(args []string) (string, error) {
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+		err := run(args)
+		w.Close()
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		os.Stdout = oldOut
+		return buf.String(), err
+	}
+
+	// 1. Missing json flag
+	_, err := captureStdout([]string{"find", "test-query"})
+	if err == nil || !strings.Contains(err.Error(), "usage: lazyskills find --json <query>") {
+		t.Fatalf("expected usage error without --json, got: %v", err)
+	}
+
+	// 2. Missing query
+	_, err = captureStdout([]string{"find", "--json"})
+	if err == nil || !strings.Contains(err.Error(), "usage: lazyskills find --json <query>") {
+		t.Fatalf("expected usage error without query, got: %v", err)
+	}
+
+	// 3. Multi query or too many args
+	_, err = captureStdout([]string{"find", "--json", "q1", "q2"})
+	if err == nil || !strings.Contains(err.Error(), "usage: lazyskills find --json <query>") {
+		t.Fatalf("expected usage error with multiple queries, got: %v", err)
+	}
+
+	// 4. Success JSON
+	out, err := captureStdout([]string{"find", "--json", "test-query"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Check if output is stable indented JSON containing the query and skills
+	var res struct {
+		Query   string           `json:"query"`
+		Results []registry.Skill `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("failed to parse JSON output: %v\nOutput was:\n%s", err, out)
+	}
+
+	if res.Query != "test-query" {
+		t.Errorf("expected query %q, got %q", "test-query", res.Query)
+	}
+
+	if len(res.Results) != 1 || res.Results[0].Slug != "skill-1" {
+		t.Errorf("unexpected results: %+v", res.Results)
 	}
 }

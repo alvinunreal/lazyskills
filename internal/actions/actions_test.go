@@ -267,8 +267,8 @@ func containsArg(args []string, want string) bool {
 
 func TestAppLevelActions(t *testing.T) {
 	previews := AppLevelActions()
-	if len(previews) != 3 {
-		t.Fatalf("expected 3 app-level actions, got %d", len(previews))
+	if len(previews) != 4 {
+		t.Fatalf("expected 4 app-level actions, got %d", len(previews))
 	}
 	initAct := previewByTitle(t, previews, "Initialize skills in project")
 	if initAct.ID != "skills_init" || !initAct.Mutates || !initAct.RequiresConfirm {
@@ -283,6 +283,11 @@ func TestAppLevelActions(t *testing.T) {
 	updateAct := previewByTitle(t, previews, "Update project-local skills")
 	if updateAct.ID != "skills_update" || !updateAct.Mutates || !updateAct.RequiresConfirm {
 		t.Errorf("unexpected skills update preview: %+v", updateAct)
+	}
+
+	registryAct := previewByTitle(t, previews, "Find new skills from skills.sh")
+	if registryAct.ID != "find_new_skills" || registryAct.Exec.Internal != "find_new_skills" || !registryAct.Available {
+		t.Errorf("unexpected registry preview: %+v", registryAct)
 	}
 }
 
@@ -357,5 +362,79 @@ func TestForAvailableSkillUnsafeRejection(t *testing.T) {
 		if previews[0].Available {
 			t.Errorf("expected preview to be unavailable for source=%q name=%q", tc.source, tc.name)
 		}
+	}
+}
+
+func TestForAvailableSkillWithOptions(t *testing.T) {
+	LookPath = func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+
+	// 1. Display name differs from slug: check title and args
+	previews := ForAvailableSkillWithOptions("owner/repo", InstallOptions{
+		DisplayName: "My Display Name",
+		Slug:        "my-slug-name",
+		Global:      false,
+	})
+	if len(previews) != 1 {
+		t.Fatalf("expected 1 preview, got %d", len(previews))
+	}
+	p := previews[0]
+	if !p.Available {
+		t.Fatalf("expected preview to be available, got unavailable with reason: %s", p.Reason)
+	}
+	if p.Title != "Install My Display Name to project" {
+		t.Errorf("expected project title, got %q", p.Title)
+	}
+	if !containsArg(p.Exec.Args, "owner/repo") || !containsArg(p.Exec.Args, "my-slug-name") {
+		t.Errorf("expected source and slug-name in args, got %+v", p.Exec.Args)
+	}
+	if containsArg(p.Exec.Args, "My Display Name") {
+		t.Errorf("did not expect display name in command args: %+v", p.Exec.Args)
+	}
+	if containsArg(p.Exec.Args, "-g") {
+		t.Errorf("did not expect global -g flag when Global=false")
+	}
+
+	// 2. Global -g flag added only when Global is true
+	globalPreviews := ForAvailableSkillWithOptions("owner/repo", InstallOptions{
+		DisplayName: "My Display Name",
+		Slug:        "my-slug-name",
+		Global:      true,
+	})
+	if len(globalPreviews) != 1 {
+		t.Fatalf("expected 1 preview, got %d", len(globalPreviews))
+	}
+	gp := globalPreviews[0]
+	if gp.Title != "Install My Display Name globally" {
+		t.Errorf("expected global title, got %q", gp.Title)
+	}
+	if !containsArg(gp.Exec.Args, "-g") {
+		t.Errorf("expected global -g flag in args, got %+v", gp.Exec.Args)
+	}
+
+	// 3. Unsafe source/slug rejection checks
+	unsafeCases := []struct {
+		desc   string
+		source string
+		opts   InstallOptions
+	}{
+		{"unsafe source", "source\x1b", InstallOptions{DisplayName: "Name", Slug: "slug"}},
+		{"unsafe slug", "source", InstallOptions{DisplayName: "Name", Slug: "slug\n"}},
+		{"empty slug", "source", InstallOptions{DisplayName: "Name", Slug: ""}},
+		{"empty source", "", InstallOptions{DisplayName: "Name", Slug: "slug"}},
+		{"option source", "-g", InstallOptions{DisplayName: "Name", Slug: "slug"}},
+		{"option slug", "source", InstallOptions{DisplayName: "Name", Slug: "-g"}},
+	}
+	for _, tc := range unsafeCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			previews := ForAvailableSkillWithOptions(tc.source, tc.opts)
+			if len(previews) != 1 {
+				t.Fatalf("expected 1 preview, got %d", len(previews))
+			}
+			if previews[0].Available {
+				t.Errorf("expected preview to be unavailable for %+v", tc)
+			}
+		})
 	}
 }

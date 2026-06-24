@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/alvinunreal/lazyskills/internal/buildinfo"
+	"github.com/alvinunreal/lazyskills/internal/registry"
 	"github.com/alvinunreal/lazyskills/internal/scan"
 	"github.com/alvinunreal/lazyskills/internal/selfupdate"
 	"github.com/alvinunreal/lazyskills/internal/tui"
@@ -42,6 +43,43 @@ func run(args []string) error {
 	if len(args) > 0 && (args[0] == "version" || args[0] == "--version" || args[0] == "-v") {
 		fmt.Fprintf(os.Stdout, "lazyskills %s\ncommit: %s\nbuilt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.Date)
 		return nil
+	}
+	if len(args) > 0 && args[0] == "find" {
+		fs := flag.NewFlagSet("find", flag.ContinueOnError)
+		fs.SetOutput(os.Stderr)
+		jsonOut := fs.Bool("json", false, "output JSON")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if !*jsonOut {
+			return fmt.Errorf("usage: lazyskills find --json <query>")
+		}
+		if fs.NArg() != 1 {
+			return fmt.Errorf("usage: lazyskills find --json <query>")
+		}
+		query := fs.Arg(0)
+
+		client := registry.NewClient()
+		ctx := context.Background()
+		skills, err := client.Search(ctx, query, 0)
+		if err != nil {
+			return err
+		}
+
+		res := struct {
+			Query   string           `json:"query"`
+			Results []registry.Skill `json:"results"`
+		}{
+			Query:   query,
+			Results: skills,
+		}
+		if res.Results == nil {
+			res.Results = []registry.Skill{}
+		}
+
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(res)
 	}
 	if len(args) > 0 && args[0] == "update" {
 		fs := flag.NewFlagSet("update", flag.ContinueOnError)
@@ -146,7 +184,7 @@ func run(args []string) error {
 			return err
 		}
 		if fs.NArg() > 0 {
-			return fmt.Errorf("usage: lazyskills [--cwd <path>] | lazyskills scan --json [--cwd <path>] | lazyskills update [--check] [--print-command] [--yes] | lazyskills version")
+			return fmt.Errorf("usage: lazyskills [--cwd <path>] | lazyskills scan --json [--cwd <path>] | lazyskills update [--check] [--print-command] [--yes] | lazyskills find --json <query> | lazyskills version")
 		}
 		if *cwd == "" {
 			var err error

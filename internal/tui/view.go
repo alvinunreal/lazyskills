@@ -29,6 +29,9 @@ func (m appModel) View() string {
 		return smallTerminalView(layout.Width, layout.Height)
 	}
 
+	if m.registryModal {
+		return m.registryModalOverlay(layout)
+	}
 	if m.detailModal {
 		return m.detailModalOverlay(layout)
 	}
@@ -1268,7 +1271,7 @@ func (m appModel) footerText(width int) string {
 		text = "esc/q/? close help"
 	} else if m.focus == focusMetadata {
 		footerActions := m.currentActions()
-		parts := []string{"↑/↓ scroll metadata", "enter open", "c commands"}
+		parts := []string{"↑/↓ scroll metadata", "enter open", "c commands", "n find new"}
 		if hasAvailableToggleAction(footerActions) {
 			parts = append(parts, "e enable/disable")
 		}
@@ -1276,7 +1279,7 @@ func (m appModel) footerText(width int) string {
 		text = strings.Join(parts, " · ")
 	} else if m.focus == focusPreview {
 		footerActions := m.currentActions()
-		parts := []string{"↑/↓ scroll preview", "enter open", "c commands"}
+		parts := []string{"↑/↓ scroll preview", "enter open", "c commands", "n find new"}
 		if hasAvailableToggleAction(footerActions) {
 			parts = append(parts, "e enable/disable")
 		}
@@ -1296,14 +1299,14 @@ func (m appModel) footerText(width int) string {
 				if discoverable, _ := m.isSourceDiscoverable(row.groupName); discoverable {
 					parts = append(parts, "d scan")
 				}
-				parts = append(parts, "c actions", "? help")
+				parts = append(parts, "c actions", "n find new", "? help")
 				text = strings.Join(parts, " · ")
 			} else {
 				parts := []string{"enter open"}
 				if hasAvailableToggleAction(footerActions) {
 					parts = append(parts, "e enable/disable")
 				}
-				parts = append(parts, "c actions")
+				parts = append(parts, "c actions", "n find new")
 				if hasAvailableAction(footerActions, preferredUpdateActionID(m.selectedCount())) {
 					parts = append(parts, "u update")
 				}
@@ -1314,7 +1317,7 @@ func (m appModel) footerText(width int) string {
 				text = strings.Join(parts, " · ")
 			}
 		} else {
-			text = "enter open · c actions · ? help"
+			text = "n find new · c actions · ? help"
 		}
 	}
 	isNormalState := !m.running && !m.confirming && !m.searching && !m.detailModal && !m.commands && !m.helpOpen
@@ -1380,6 +1383,7 @@ func (m appModel) helpModalOverlay(layout appLayout) string {
 		"  o               Open selected skill directly in editor",
 		"  e               Enable / disable selected skill or source group",
 		"  c               Open command picker menu",
+		"  n               Find and install new skills from skills.sh",
 		"  u / x           Quick reinstall-update / remove for selection",
 		"  U               Check/run LazySkills application update",
 		"  d               Check local or remote source for available skills (Source row)",
@@ -1671,4 +1675,249 @@ func truncateReleaseNotes(notes string, width int) string {
 		out = append(out, wrapText(line, width))
 	}
 	return strings.Join(out, "\n")
+}
+
+func (m appModel) registryModalOverlay(layout appLayout) string {
+	modalWidth, modalHeight := detailModalDimensions(layout)
+	innerWidth := modalWidth - 4
+	innerHeight := modalHeight - 6
+
+	// Split innerWidth: left is 45%, right is 55%
+	leftWidth := innerWidth * 45 / 100
+	rightWidth := innerWidth - leftWidth - 3 // leave a small space/divider
+
+	// Left pane header: Query input
+	var inputLine string
+	focusPrompt := "Search: "
+	if !m.registryFocusList {
+		focusPrompt = "Search › "
+	}
+	if m.registryQuery == "" {
+		inputLine = focusPrompt + dimStyle.Render("Type to search...")
+	} else {
+		inputLine = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true).Render(focusPrompt) + m.registryQuery + "_"
+	}
+
+	var leftContentLines []string
+	leftContentLines = append(leftContentLines, inputLine, "")
+
+	// Left pane body: status or results
+	if m.registryLoading {
+		leftContentLines = append(leftContentLines, "  "+runningStyle.Render("Searching registry..."))
+	} else if m.registryError != nil {
+		leftContentLines = append(leftContentLines,
+			errorStyle.Render("  Error fetching results:"),
+			wrapText("  "+m.registryError.Error(), leftWidth),
+			"",
+			"  Press Enter to retry, or type to search.",
+		)
+	} else if len(m.registryQuery) < 2 {
+		leftContentLines = append(leftContentLines, "  Type at least 2 characters to search.")
+	} else if len(m.registryResults) == 0 {
+		leftContentLines = append(leftContentLines, "  No skills found in registry.")
+	} else {
+		// Show results
+		for idx, s := range m.registryResults {
+			selector := "  "
+			if idx == m.registrySelected {
+				selector = "› "
+			}
+
+			status, _ := m.checkRegistrySkillStatus(s)
+			var badge string
+			if status == StatusInstalled {
+				badge = scopeProjectStyle.Render("[installed]")
+			} else if status == StatusSimilarInstalled {
+				badge = warningStyle.Render("[similar]")
+			}
+
+			installsText := fmt.Sprintf("%d↓", s.Installs)
+			installsStyled := dimStyle.Render(installsText)
+
+			// Selector (2) + Name(?) + Badge(?) + Installs(?)
+			// Let's truncate Name to fit nicely in leftWidth
+			rightPart := ""
+			if badge != "" {
+				rightPart = badge + " " + installsStyled
+			} else {
+				rightPart = installsStyled
+			}
+			rightPartWidth := lipgloss.Width(rightPart)
+			availNameWidth := leftWidth - 2 - rightPartWidth - 1 // 1 space padding
+			if availNameWidth < 5 {
+				availNameWidth = 5
+			}
+			namePart := truncate(s.DisplayName, availNameWidth)
+
+			// Pad the line
+			line := selector + namePart
+			paddingLen := leftWidth - lipgloss.Width(line) - rightPartWidth
+			if paddingLen > 0 {
+				line += strings.Repeat(" ", paddingLen)
+			}
+			line += rightPart
+
+			if idx == m.registrySelected {
+				leftContentLines = append(leftContentLines, selectedStyle.Render(padRight(line, leftWidth)))
+			} else {
+				leftContentLines = append(leftContentLines, line)
+			}
+		}
+	}
+
+	leftPane := fitLines(strings.Join(leftContentLines, "\n"), innerHeight)
+
+	// Right pane: detail preview
+	var rightContentLines []string
+	if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
+		s := m.registryResults[m.registrySelected]
+		status, similarMsg := m.checkRegistrySkillStatus(s)
+
+		rightContentLines = append(rightContentLines,
+			titleStyle.Render(s.DisplayName),
+			"",
+			formatMetaLine("Slug:", s.Slug, rightWidth),
+			formatMetaLine("Source:", s.Source, rightWidth),
+			formatMetaLine("Installs:", fmt.Sprintf("%d", s.Installs), rightWidth),
+		)
+
+		// Fetch previews
+		projActions := actions.ForAvailableSkillWithOptions(s.Source, actions.InstallOptions{
+			DisplayName: s.DisplayName,
+			Slug:        s.Slug,
+			Global:      false,
+		})
+		globalActions := actions.ForAvailableSkillWithOptions(s.Source, actions.InstallOptions{
+			DisplayName: s.DisplayName,
+			Slug:        s.Slug,
+			Global:      true,
+		})
+
+		allowInstall := true
+		cantInstallReason := ""
+		if len(projActions) == 0 {
+			allowInstall = false
+			cantInstallReason = "installation configuration failed"
+		} else if !projActions[0].Available {
+			allowInstall = false
+			cantInstallReason = projActions[0].Reason
+		}
+
+		var statusVal string
+		if status == StatusInstalled {
+			statusVal = scopeProjectStyle.Render("[installed] Already installed")
+			allowInstall = false
+			cantInstallReason = "Already installed in project or global catalog."
+		} else if s.Invalid {
+			statusVal = errorStyle.Render("unavailable")
+			allowInstall = false
+			cantInstallReason = compat.FirstNonEmpty(s.Reason, "registry result cannot be safely installed")
+		} else if status == StatusSimilarInstalled {
+			statusVal = warningStyle.Render("[similar] Similar name installed")
+		} else {
+			statusVal = lipgloss.NewStyle().Foreground(lipgloss.Color("114")).Render("not installed (installable)")
+		}
+
+		rightContentLines = append(rightContentLines, formatMetaLine("Status:", statusVal, rightWidth))
+		if status == StatusSimilarInstalled && similarMsg != "" {
+			rightContentLines = append(rightContentLines, "", errorStyle.Render(wrapText("Notice: A similar skill named '"+similarMsg+"' is already installed.", rightWidth)))
+		}
+
+		// Install Command previews
+		rightContentLines = append(rightContentLines, "")
+		rightContentLines = append(rightContentLines, sectionHeaderStyle.Render("Install Commands:"), "")
+
+		if !allowInstall && cantInstallReason != "" {
+			rightContentLines = append(rightContentLines, errorStyle.Render(wrapText("Installations disabled: "+cantInstallReason, rightWidth)))
+		} else {
+			if len(projActions) > 0 && projActions[0].Available {
+				rightContentLines = append(rightContentLines,
+					dimStyle.Render("Project-local:"),
+					"  "+projActions[0].Command,
+				)
+			}
+			if len(globalActions) > 0 && globalActions[0].Available {
+				rightContentLines = append(rightContentLines,
+					dimStyle.Render("Globally (adds -g):"),
+					"  "+globalActions[0].Command,
+				)
+			}
+		}
+	} else {
+		rightContentLines = append(rightContentLines, dimStyle.Render("Select a registry search result to view details."))
+	}
+
+	rightPane := fitLines(strings.Join(rightContentLines, "\n"), innerHeight)
+
+	// Vertical divider
+	var dividerLines []string
+	for i := 0; i < innerHeight; i++ {
+		dividerLines = append(dividerLines, dimStyle.Render("│"))
+	}
+	dividerString := strings.Join(dividerLines, "\n")
+
+	// Combine left and right
+	body := lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().Width(leftWidth).Render(leftPane),
+		" ",
+		dividerString,
+		" ",
+		lipgloss.NewStyle().Width(rightWidth).Render(rightPane),
+	)
+
+	// Help line
+	helpLineText := m.registryModalHelpLine()
+	helpLine := dimStyle.Render(helpLineText)
+
+	content := []string{
+		titleStyle.Render(" Skills.sh Registry Search "),
+		"",
+		body,
+		"",
+		helpLine,
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(actionBorderColor).
+		Padding(1, 2).
+		Width(modalWidth).
+		Height(modalHeight).
+		Render(strings.Join(content, "\n"))
+
+	return fitToScreen(lipgloss.Place(layout.Width, layout.Height, lipgloss.Center, lipgloss.Center, box), layout.Width, layout.Height)
+}
+
+func (m appModel) registryModalHelpLine() string {
+	if !m.registryFocusList {
+		if m.registryError != nil && len(m.registryQuery) >= 2 {
+			return "type search · enter retry · tab select list · esc close"
+		}
+		return "type search · tab select list · esc close"
+	}
+	parts := []string{"type search", "↑/↓ choose"}
+	if m.selectedRegistryResultInstallable() {
+		parts = append(parts, "enter install to project", "g install globally")
+	} else {
+		parts = append(parts, "install unavailable")
+	}
+	parts = append(parts, "tab type search", "esc close")
+	return strings.Join(parts, " · ")
+}
+
+func (m appModel) selectedRegistryResultInstallable() bool {
+	if len(m.registryResults) == 0 || m.registrySelected < 0 || m.registrySelected >= len(m.registryResults) {
+		return false
+	}
+	s := m.registryResults[m.registrySelected]
+	if s.Invalid {
+		return false
+	}
+	status, _ := m.checkRegistrySkillStatus(s)
+	if status == StatusInstalled {
+		return false
+	}
+	projectActions := actions.ForAvailableSkillWithOptions(s.Source, actions.InstallOptions{DisplayName: s.DisplayName, Slug: s.Slug, Global: false})
+	globalActions := actions.ForAvailableSkillWithOptions(s.Source, actions.InstallOptions{DisplayName: s.DisplayName, Slug: s.Slug, Global: true})
+	return len(projectActions) > 0 && projectActions[0].Available && len(globalActions) > 0 && globalActions[0].Available
 }
