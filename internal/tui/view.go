@@ -1199,6 +1199,10 @@ func (m appModel) commandPreview(sk *model.Skill, width int) []string {
 			cmdText := truncate(compat.SanitizeMetadata(preview.Command), width-4)
 			cmdLine := activeActionSubStyle.Render(padRight("  "+cmdText, width))
 			lines = append(lines, cmdLine)
+			if review := m.updateReviewLines(preview, width); len(review) > 0 {
+				lines = append(lines, "")
+				lines = append(lines, review...)
+			}
 
 		} else {
 			// Unselected Action (normal colors, subordinate metadata very dim)
@@ -1517,14 +1521,17 @@ func (m appModel) confirmationOverlay(layout appLayout) string {
 	command := ""
 	dangerous := false
 	exact := false
+	var confirmAction actions.CommandPreview
 	if m.pendingAction != nil {
+		confirmAction = *m.pendingAction
 		title = compat.SanitizeMetadata(m.pendingAction.Title)
 		phrase = compat.SanitizeMetadata(m.pendingAction.ConfirmValue)
 		command = compat.SanitizeMetadata(m.pendingAction.Command)
 		dangerous = m.pendingAction.Dangerous
 		exact = requiresExactConfirmation(*m.pendingAction)
 	} else if acts := m.currentActions(); len(acts) > 0 && m.action < len(acts) {
-		action := acts[m.action]
+		confirmAction = acts[m.action]
+		action := confirmAction
 		title = compat.SanitizeMetadata(action.Title)
 		phrase = compat.SanitizeMetadata(action.ConfirmValue)
 		command = compat.SanitizeMetadata(action.Command)
@@ -1551,6 +1558,10 @@ func (m appModel) confirmationOverlay(layout appLayout) string {
 	}
 	if command != "" {
 		lines = append(lines, sectionHeaderStyle.Render("Command"), dimStyle.Render(wrapText(command, 48)), "")
+	}
+	if review := m.updateReviewLines(confirmAction, 48); len(review) > 0 {
+		lines = append(lines, review...)
+		lines = append(lines, "")
 	}
 	lines = append(lines, wrapText(instruction, 48))
 

@@ -140,6 +140,17 @@ func TestUnsafeRawLockFieldsSuppressExecActions(t *testing.T) {
 	}
 }
 
+func TestUntrackedSkillUpdateRemainsUnavailable(t *testing.T) {
+	previews := ForSkill(&model.Skill{Name: "Custom", Scope: model.ScopeProject, CanonicalPath: "/tmp/custom"})
+	add := previewByTitle(t, previews, "Reinstall/update selected skill")
+	if add.Available {
+		t.Fatalf("expected untracked skill update to remain unavailable: %#v", add)
+	}
+	if !strings.Contains(add.Reason, "safe identity data") {
+		t.Fatalf("expected unavailable reason to explain missing identity, got %q", add.Reason)
+	}
+}
+
 func TestResolverFallbackUsesNpxYesSkills(t *testing.T) {
 	previews := ForSkillWithResolver(&model.Skill{Name: "Deploy", Scope: model.ScopeProject, CanonicalPath: "/tmp/deploy", LocalLock: &model.LocalLockEntry{Source: "owner/repo"}}, func() (string, []string) {
 		return "npx", []string{"--yes", "skills"}

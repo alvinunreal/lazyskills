@@ -1195,6 +1195,110 @@ func TestConfirmationOverlayCopyMatchesRisk(t *testing.T) {
 	}
 }
 
+func TestUpdateReviewShowsProvenanceAndDiff(t *testing.T) {
+	cwd := t.TempDir()
+	sourceRoot := filepath.Join(cwd, "source")
+	installedRoot := filepath.Join(cwd, "installed")
+	sourceSkillDir := filepath.Join(sourceRoot, "skills", "deploy")
+	installedSkillDir := installedRoot
+	for _, dir := range []string{sourceSkillDir, installedSkillDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(sourceSkillDir, "SKILL.md"), []byte("# Source\nsource line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceSkillDir, "guide.md"), []byte("source guide\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installedSkillDir, "SKILL.md"), []byte("# Installed\nold line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installedSkillDir, "old.md"), []byte("installed only\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := appModel{cwd: cwd, width: 120, height: 32, selected: 0, result: model.ScanResult{Skills: []*model.Skill{{
+		Name:          "Deploy Skill",
+		Description:   "desc",
+		Scope:         model.ScopeProject,
+		CanonicalPath: installedSkillDir,
+		LocalLock:     &model.LocalLockEntry{Source: sourceRoot, SourceType: "local", SkillPath: "skills/deploy/SKILL.md", ComputedHash: "hash-123"},
+	}}}}
+	m.commands = true
+	m.action = actionIndex(t, m, "Reinstall/update selected skill")
+	out := compat.StripTerminalEscapes(strings.Join(m.commandPreview(nil, 100), "\n"))
+	for _, want := range []string{"Update review", "Source:", "Source type:", "Hash:", "Changed files", "modified: SKILL.md", "added: guide.md", "removed: old.md"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in update review, got %q", want, out)
+		}
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Fatalf("expected sanitized review output, got %q", out)
+	}
+	confirmOut := compat.StripTerminalEscapes(m.confirmationOverlay(appLayout{Width: 120, Height: 32}))
+	if !strings.Contains(confirmOut, "Update review") || !strings.Contains(confirmOut, "Press Enter to continue") {
+		t.Fatalf("expected confirmation overlay to include update review and prompt, got %q", confirmOut)
+	}
+}
+
+func TestUpdateReviewFallsBackForRemoteSkills(t *testing.T) {
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwd, "owner", "repo", "skills", "deploy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "owner", "repo", "skills", "deploy", "SKILL.md"), []byte("# Local impostor\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installedRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(installedRoot, "SKILL.md"), []byte("# Installed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := appModel{cwd: cwd, width: 120, height: 32, selected: 0, result: model.ScanResult{Skills: []*model.Skill{{
+		Name:          "Deploy Skill",
+		Scope:         model.ScopeGlobal,
+		CanonicalPath: installedRoot,
+		GlobalLock:    &model.GlobalLockEntry{Source: "owner/repo", SourceURL: "https://github.com/owner/repo", SourceType: "github", Ref: "main", SkillPath: "skills/deploy/SKILL.md", SkillFolderHash: "deadbeef"},
+	}}}}
+	m.commands = true
+	m.action = actionIndex(t, m, "Reinstall/update selected skill")
+	out := compat.StripTerminalEscapes(strings.Join(m.commandPreview(nil, 100), "\n"))
+	for _, want := range []string{"https://github.com/owner/repo", "Source type:", "Hash:", "Content comparison unavailable"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in remote update review, got %q", want, out)
+		}
+	}
+	if strings.Contains(out, "No content changes detected") || strings.Contains(out, "Local impostor") {
+		t.Fatalf("remote source should not compare against cwd/owner/repo local impostor, got %q", out)
+	}
+}
+
+func TestBulkUpdateReviewUsesSelectedSkillsBeforeHeaderGroup(t *testing.T) {
+	cwd := t.TempDir()
+	selectedInstalled := filepath.Join(cwd, "installed-selected")
+	unselectedInstalled := filepath.Join(cwd, "installed-unselected")
+	for _, dir := range []string{selectedInstalled, unselectedInstalled} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := appModel{cwd: cwd, width: 120, height: 32, selected: 0, result: model.ScanResult{Skills: []*model.Skill{
+		{Name: "Unselected", Scope: model.ScopeProject, CanonicalPath: unselectedInstalled, LocalLock: &model.LocalLockEntry{Source: "aaa/header-source", SourceType: "github"}},
+		{Name: "Selected", Scope: model.ScopeProject, CanonicalPath: selectedInstalled, LocalLock: &model.LocalLockEntry{Source: "zzz/selected-source", SourceType: "github"}},
+	}}}
+	m.selectedKeys = map[string]bool{skillKey(m.result.Skills[1]): true}
+	m.commands = true
+	m.action = actionIndex(t, m, "Reinstall/update 1 selected skills")
+	out := compat.StripTerminalEscapes(strings.Join(m.commandPreview(nil, 100), "\n"))
+	if !strings.Contains(out, "Selected") || !strings.Contains(out, "zzz/selected-source") {
+		t.Fatalf("expected selected skill in bulk update review, got %q", out)
+	}
+	if strings.Contains(out, "Unselected") || strings.Contains(out, "aaa/header-source") {
+		t.Fatalf("bulk update review should match selected skills, not header source group, got %q", out)
+	}
+}
+
 func actionTestModel(cwd string) appModel {
 	return appModel{cwd: cwd, width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{{
 		Name:          "Deploy Skill",

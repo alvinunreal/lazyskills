@@ -12,6 +12,7 @@ func TestSanitizeLockDisplayKeepsRawSeparate(t *testing.T) {
 		Ref:        "main\nnext",
 		SourceType: "github",
 		SkillPath:  "skills/\x1b]0;bad\x07demo/SKILL.md",
+		ComputedHash: "hash\x1b[31m",
 	}
 	display := SanitizeLocalLockDisplay(local)
 	if local.Source != "owner/\x1b[31mrepo" {
@@ -20,6 +21,9 @@ func TestSanitizeLockDisplayKeepsRawSeparate(t *testing.T) {
 	if display.Source != "owner/repo" || display.Ref != "main next" || display.SkillPath != "skills/demo/SKILL.md" {
 		t.Fatalf("unexpected sanitized local display: %#v", display)
 	}
+	if display.ComputedHash != "hash" {
+		t.Fatalf("expected sanitized local hash, got %#v", display)
+	}
 
 	global := model.GlobalLockEntry{
 		Source:     "owner/\x1b[31mrepo",
@@ -27,6 +31,7 @@ func TestSanitizeLockDisplayKeepsRawSeparate(t *testing.T) {
 		Ref:        "main\nnext",
 		SkillPath:  "skills/demo\r/SKILL.md",
 		PluginName: "plugin\x07name",
+		SkillFolderHash: "ghash\x1b[31m",
 	}
 	gdisplay := SanitizeGlobalLockDisplay(global)
 	if global.SourceURL != "https://example.com/\x1b[31mrepo" {
@@ -34,6 +39,9 @@ func TestSanitizeLockDisplayKeepsRawSeparate(t *testing.T) {
 	}
 	if gdisplay.Source != "owner/repo" || gdisplay.SourceURL != "https://example.com/repo" || gdisplay.Ref != "main next" || gdisplay.SkillPath != "skills/demo/SKILL.md" || gdisplay.PluginName != "pluginname" {
 		t.Fatalf("unexpected sanitized global display: %#v", gdisplay)
+	}
+	if gdisplay.SkillFolderHash != "ghash" {
+		t.Fatalf("expected sanitized global hash, got %#v", gdisplay)
 	}
 }
 

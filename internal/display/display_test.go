@@ -30,7 +30,7 @@ func TestSkillViewSanitizesRenderedFields(t *testing.T) {
 			Path:    "/tmp/\x1b[31mskill",
 			Status:  model.StatusCanonical,
 		}},
-		LocalLock: &model.LocalLockEntry{Source: "owner/\x1b[31mrepo", SkillPath: "skills/demo\r/SKILL.md"},
+		LocalLock: &model.LocalLockEntry{Source: "owner/\x1b[31mrepo", SkillPath: "skills/demo\r/SKILL.md", ComputedHash: "hash\x1b[31m"},
 		HealthIssues: []model.HealthIssue{{
 			Type:    "broken_symlink",
 			Message: "bad\x1b[31m message",
@@ -43,6 +43,9 @@ func TestSkillViewSanitizesRenderedFields(t *testing.T) {
 	}
 	if view.Name != "Bad Name" || view.Description != "Line one Line two" || view.LocalLock.Source != "owner/repo" {
 		t.Fatalf("unexpected sanitized fields: %#v", view)
+	}
+	if view.LocalLock.ComputedHash != "hash" {
+		t.Fatalf("expected sanitized local hash, got %#v", view.LocalLock)
 	}
 	if view.Preview != "# Hi\nred" {
 		t.Fatalf("unexpected preview %q", view.Preview)

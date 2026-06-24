@@ -69,6 +69,7 @@ type LocalLockDisplay struct {
 	Ref        string `json:"ref,omitempty"`
 	SourceType string `json:"sourceType,omitempty"`
 	SkillPath  string `json:"skillPath,omitempty"`
+	ComputedHash string `json:"computedHash,omitempty"`
 }
 
 type GlobalLockDisplay struct {
@@ -78,6 +79,7 @@ type GlobalLockDisplay struct {
 	Ref        string `json:"ref,omitempty"`
 	SkillPath  string `json:"skillPath,omitempty"`
 	PluginName string `json:"pluginName,omitempty"`
+	SkillFolderHash string `json:"skillFolderHash,omitempty"`
 }
 
 func SanitizeLocalLockDisplay(entry model.LocalLockEntry) LocalLockDisplay {
@@ -86,6 +88,7 @@ func SanitizeLocalLockDisplay(entry model.LocalLockEntry) LocalLockDisplay {
 		Ref:        SanitizeMetadata(entry.Ref),
 		SourceType: SanitizeMetadata(entry.SourceType),
 		SkillPath:  SanitizeMetadata(entry.SkillPath),
+		ComputedHash: SanitizeMetadata(entry.ComputedHash),
 	}
 }
 
@@ -97,5 +100,6 @@ func SanitizeGlobalLockDisplay(entry model.GlobalLockEntry) GlobalLockDisplay {
 		Ref:        SanitizeMetadata(entry.Ref),
 		SkillPath:  SanitizeMetadata(entry.SkillPath),
 		PluginName: SanitizeMetadata(entry.PluginName),
+		SkillFolderHash: SanitizeMetadata(entry.SkillFolderHash),
 	}
 }
