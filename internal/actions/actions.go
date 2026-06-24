@@ -1,10 +1,13 @@
 package actions
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/alvinunreal/lazyskills/internal/compat"
@@ -471,4 +474,313 @@ func shellQuote(value string) string {
 		return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 	}
 	return value
+}
+
+// DefaultProjectBundlePath returns the canonical bundle path used for project
+// skill exports/imports.
+func DefaultProjectBundlePath(cwd string) string {
+	return filepath.Join(cwd, ".lazyskills", "skills.bundle.json")
+}
+
+type SkillBundleExportSummary struct {
+	Path         string
+	Included     int
+	Skipped      int
+	SkippedNames []string
+}
+
+type SkillBundleImportConflict struct {
+	Name   string
+	Reason string
+}
+
+type SkillBundleImportPlan struct {
+	Path      string
+	Bundle    model.SkillBundle
+	Installs  []CommandPreview
+	Skipped   []string
+	Conflicts []SkillBundleImportConflict
+	Summary   string
+}
+
+// BuildProjectSkillBundle extracts project-scoped skills into a portable bundle
+// payload. Untracked project skills are skipped because they cannot be
+// reproducibly reinstalled from lock identity.
+func BuildProjectSkillBundle(cwd string, skills []*model.Skill) (model.SkillBundle, SkillBundleExportSummary) {
+	path := DefaultProjectBundlePath(cwd)
+	bundle := model.SkillBundle{Version: 1, Scope: model.ScopeProject, Skills: []model.SkillBundleSkill{}}
+	skippedNames := []string{}
+	for _, sk := range skills {
+		if sk == nil || sk.Scope != model.ScopeProject || sk.LocalLock == nil {
+			if sk != nil && sk.Scope == model.ScopeProject {
+				skippedNames = append(skippedNames, compat.SanitizeMetadata(sk.Name))
+			}
+			continue
+		}
+		bundle.Skills = append(bundle.Skills, model.SkillBundleSkill{
+			Name:      compat.SanitizeMetadata(sk.Name),
+			Source:    compat.SanitizeMetadata(sk.LocalLock.Source),
+			Reference: compat.SanitizeMetadata(sk.LocalLock.Ref),
+			SkillPath: compat.SanitizeMetadata(sk.LocalLock.SkillPath),
+			Scope:     model.ScopeProject,
+			LockIdentity: model.SkillBundleLockIdentity{
+				Source:       compat.SanitizeMetadata(sk.LocalLock.Source),
+				SourceType:   compat.SanitizeMetadata(sk.LocalLock.SourceType),
+				Reference:    compat.SanitizeMetadata(sk.LocalLock.Ref),
+				SkillPath:    compat.SanitizeMetadata(sk.LocalLock.SkillPath),
+				ComputedHash: compat.SanitizeMetadata(sk.LocalLock.ComputedHash),
+			},
+		})
+	}
+	sort.Slice(bundle.Skills, func(i, j int) bool {
+		li := strings.ToLower(bundle.Skills[i].Name)
+		lj := strings.ToLower(bundle.Skills[j].Name)
+		if li == lj {
+			return bundle.Skills[i].Source < bundle.Skills[j].Source
+		}
+		return li < lj
+	})
+	sort.Strings(skippedNames)
+	return bundle, SkillBundleExportSummary{Path: path, Included: len(bundle.Skills), Skipped: len(skippedNames), SkippedNames: skippedNames}
+}
+
+// WriteProjectSkillBundle serializes a bundle to disk, creating parent
+// directories as needed.
+func WriteProjectSkillBundle(path string, bundle model.SkillBundle) error {
+	if path == "" {
+		return errors.New("bundle path is empty")
+	}
+	if bundle.Version == 0 {
+		bundle.Version = 1
+	}
+	if bundle.Scope == "" {
+		bundle.Scope = model.ScopeProject
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	out, err := json.MarshalIndent(bundle, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(out, '\n'), 0o644)
+}
+
+// ReadProjectSkillBundle loads a bundle file from disk.
+func ReadProjectSkillBundle(path string) (model.SkillBundle, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return model.SkillBundle{}, err
+	}
+	var bundle model.SkillBundle
+	if err := json.Unmarshal(b, &bundle); err != nil {
+		return model.SkillBundle{}, err
+	}
+	if bundle.Version < 1 {
+		return model.SkillBundle{}, fmt.Errorf("bundle %s has unsupported version %d", path, bundle.Version)
+	}
+	if bundle.Scope == "" {
+		bundle.Scope = model.ScopeProject
+	}
+	return bundle, nil
+}
+
+// BuildProjectBundleImportPlan compares the bundle against the current scan and
+// returns the install preview, skipped matches, and conflicts without mutating
+// disk.
+func BuildProjectBundleImportPlan(bundlePath string, skills []*model.Skill) (SkillBundleImportPlan, error) {
+	bundle, err := ReadProjectSkillBundle(bundlePath)
+	if err != nil {
+		return SkillBundleImportPlan{}, err
+	}
+	if bundle.Scope == "" {
+		bundle.Scope = model.ScopeProject
+	}
+	plan := SkillBundleImportPlan{Path: bundlePath, Bundle: bundle}
+	for _, entry := range bundle.Skills {
+		entry := entry
+		scope := entry.Scope
+		if scope == "" {
+			scope = model.ScopeProject
+		}
+		if scope != model.ScopeProject {
+			plan.Conflicts = append(plan.Conflicts, SkillBundleImportConflict{Name: entry.Name, Reason: "bundle scope must be project"})
+			continue
+		}
+		matched := findMatchingProjectSkill(skills, entry)
+		if matched != nil {
+			plan.Skipped = append(plan.Skipped, entry.Name)
+			continue
+		}
+		if conflictReason := bundleConflictReason(skills, entry); conflictReason != "" {
+			plan.Conflicts = append(plan.Conflicts, SkillBundleImportConflict{Name: entry.Name, Reason: conflictReason})
+			continue
+		}
+		source := buildInstallSource(entry.Source, entry.Reference, entry.SkillPath)
+		if source == "" {
+			plan.Conflicts = append(plan.Conflicts, SkillBundleImportConflict{Name: entry.Name, Reason: "bundle entry is missing a safe install source"})
+			continue
+		}
+		previews := ForAvailableSkillWithResolver(source, entry.Name, ResolveSkillsCommand)
+		if len(previews) == 0 || !previews[0].Available {
+			reason := "bundle entry could not be converted into an install command"
+			if len(previews) > 0 && previews[0].Reason != "" {
+				reason = previews[0].Reason
+			}
+			plan.Conflicts = append(plan.Conflicts, SkillBundleImportConflict{Name: entry.Name, Reason: reason})
+			continue
+		}
+		plan.Installs = append(plan.Installs, previews[0])
+	}
+	plan.Summary = renderBundleImportSummary(plan)
+	return plan, nil
+}
+
+// ProjectBundleActions returns the export/import actions for the current
+// project bundle workflow.
+func ProjectBundleActions(cwd string, skills []*model.Skill) []CommandPreview {
+	_, exportSummary := BuildProjectSkillBundle(cwd, skills)
+	export := CommandPreview{
+		ID:              "bundle_export",
+		Title:           "Export project skill bundle",
+		Description:     renderBundleExportSummary(exportSummary),
+		Command:         fmt.Sprintf("bundle export -> %s", shellQuote(exportSummary.Path)),
+		Exec:            ExecSpec{Internal: "bundle_export", Args: []string{exportSummary.Path}},
+		Mutates:         true,
+		RequiresConfirm: true,
+		ConfirmValue:    exportSummary.Path,
+		Available:       true,
+	}
+	if exportSummary.Included == 0 && exportSummary.Skipped == 0 {
+		export.Description = "No project skills are currently tracked for export."
+	}
+	importPath := exportSummary.Path
+	importPlan, err := BuildProjectBundleImportPlan(importPath, skills)
+	importPreview := CommandPreview{
+		ID:              "bundle_import",
+		Title:           "Import project skill bundle",
+		Command:         fmt.Sprintf("bundle import --bundle %s", shellQuote(importPath)),
+		Exec:            ExecSpec{Internal: "bundle_import", Args: []string{importPath}},
+		RequiresConfirm: true,
+		ConfirmValue:    importPath,
+	}
+	if err != nil {
+		importPreview.Available = false
+		importPreview.Reason = compat.SanitizeMetadata(err.Error())
+		importPreview.Description = "Preview the bundle onboarding plan after exporting or creating the bundle file."
+	} else {
+		importPreview.Available = true
+		importPreview.Mutates = len(importPlan.Installs) > 0
+		importPreview.Description = importPlan.Summary
+	}
+	return []CommandPreview{export, importPreview}
+}
+
+func renderBundleExportSummary(summary SkillBundleExportSummary) string {
+	lines := []string{fmt.Sprintf("Write %d project skills to %s.", summary.Included, summary.Path)}
+	if summary.Skipped > 0 {
+		lines = append(lines, fmt.Sprintf("Skip %d untracked project skills.", summary.Skipped))
+		for _, name := range summary.SkippedNames {
+			lines = append(lines, fmt.Sprintf("- %s", name))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderBundleImportSummary(plan SkillBundleImportPlan) string {
+	lines := []string{fmt.Sprintf("Preview import plan from %s.", plan.Path)}
+	lines = append(lines, fmt.Sprintf("Install %d missing skills.", len(plan.Installs)))
+	lines = append(lines, fmt.Sprintf("Skip %d matching skills.", len(plan.Skipped)))
+	if len(plan.Conflicts) > 0 {
+		lines = append(lines, fmt.Sprintf("Surface %d conflicts without overwriting them.", len(plan.Conflicts)))
+		for _, conflict := range plan.Conflicts {
+			lines = append(lines, fmt.Sprintf("- %s: %s", conflict.Name, conflict.Reason))
+		}
+	}
+	if len(plan.Skipped) > 0 {
+		for _, name := range plan.Skipped {
+			lines = append(lines, fmt.Sprintf("- already installed: %s", name))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func findMatchingProjectSkill(skills []*model.Skill, entry model.SkillBundleSkill) *model.Skill {
+	for _, sk := range skills {
+		if sk == nil || sk.Scope != model.ScopeProject {
+			continue
+		}
+		if sameBundleIdentity(sk, entry) {
+			return sk
+		}
+	}
+	return nil
+}
+
+func bundleConflictReason(skills []*model.Skill, entry model.SkillBundleSkill) string {
+	norm := compat.NormalizeName(entry.Name)
+	for _, sk := range skills {
+		if sk == nil {
+			continue
+		}
+		if compat.NormalizeName(sk.Name) != norm {
+			continue
+		}
+		if sk.Scope != model.ScopeProject {
+			return fmt.Sprintf("matching %s skill already exists in %s scope", sk.Name, sk.Scope)
+		}
+		if !sameBundleIdentity(sk, entry) {
+			return fmt.Sprintf("existing project skill uses %s", bundleIdentityLabelForSkill(sk))
+		}
+	}
+	return ""
+}
+
+func sameBundleIdentity(sk *model.Skill, entry model.SkillBundleSkill) bool {
+	scope, source, ref, skillPath := skillBundleIdentityForSkill(sk)
+	entryScope, entrySource, entryRef, entrySkillPath := skillBundleIdentityForEntry(entry)
+	return scope == entryScope && source == entrySource && ref == entryRef && skillPath == entrySkillPath
+}
+
+func skillBundleIdentityForSkill(sk *model.Skill) (model.Scope, string, string, string) {
+	if sk == nil {
+		return "", "", "", ""
+	}
+	if sk.Scope == model.ScopeProject && sk.LocalLock != nil {
+		return sk.Scope, compat.SanitizeMetadata(sk.LocalLock.Source), compat.SanitizeMetadata(sk.LocalLock.Ref), compat.SanitizeMetadata(sk.LocalLock.SkillPath)
+	}
+	if sk.Scope == model.ScopeGlobal && sk.GlobalLock != nil {
+		return sk.Scope, compat.SanitizeMetadata(globalUpdateSource(*sk.GlobalLock)), compat.SanitizeMetadata(sk.GlobalLock.Ref), compat.SanitizeMetadata(sk.GlobalLock.SkillPath)
+	}
+	return sk.Scope, "", "", ""
+}
+
+func skillBundleIdentityForEntry(entry model.SkillBundleSkill) (model.Scope, string, string, string) {
+	scope := entry.Scope
+	if scope == "" {
+		scope = model.ScopeProject
+	}
+	return scope, compat.SanitizeMetadata(entry.Source), compat.SanitizeMetadata(entry.Reference), compat.SanitizeMetadata(entry.SkillPath)
+}
+
+func bundleIdentityLabel(scope model.Scope, source, ref, skillPath string) string {
+	parts := []string{}
+	if source != "" {
+		parts = append(parts, source)
+	}
+	if ref != "" {
+		parts = append(parts, "#"+ref)
+	}
+	if skillPath != "" {
+		parts = append(parts, skillPath)
+	}
+	if len(parts) == 0 {
+		parts = append(parts, string(scope))
+	}
+	return strings.Join(parts, " ")
+}
+
+func bundleIdentityLabelForSkill(sk *model.Skill) string {
+	scope, source, ref, skillPath := skillBundleIdentityForSkill(sk)
+	return bundleIdentityLabel(scope, source, ref, skillPath)
 }

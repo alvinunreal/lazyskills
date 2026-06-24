@@ -104,6 +104,35 @@ type GlobalLockFile struct {
 	Skills  map[string]GlobalLockEntry `json:"skills"`
 }
 
+// SkillBundle captures the project-scoped skills required to reproduce a team
+// onboarding setup without depending on a package manager-specific manifest.
+type SkillBundle struct {
+	Version int              `json:"version"`
+	Scope   Scope            `json:"scope"`
+	Skills  []SkillBundleSkill `json:"skills"`
+}
+
+// SkillBundleSkill records the minimal bundle metadata needed to reinstall a
+// skill while preserving its lock identity.
+type SkillBundleSkill struct {
+	Name         string                 `json:"name"`
+	Source       string                 `json:"source"`
+	Reference    string                 `json:"reference,omitempty"`
+	SkillPath    string                 `json:"skill_path,omitempty"`
+	Scope        Scope                  `json:"scope"`
+	LockIdentity SkillBundleLockIdentity `json:"lock_identity"`
+}
+
+// SkillBundleLockIdentity mirrors the project lock identity fields so imports
+// can compare exact source/ref/path matches before applying changes.
+type SkillBundleLockIdentity struct {
+	Source       string `json:"source,omitempty"`
+	SourceType   string `json:"sourceType,omitempty"`
+	Reference    string `json:"reference,omitempty"`
+	SkillPath    string `json:"skillPath,omitempty"`
+	ComputedHash string `json:"computedHash,omitempty"`
+}
+
 // Skill represents the consolidated view of a skill.
 type Skill struct {
 	Name          string            `json:"name"`

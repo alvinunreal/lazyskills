@@ -1178,6 +1178,12 @@ func (m appModel) commandPreview(sk *model.Skill, width int) []string {
 						lines = append(lines, activeActionSubStyle.Render(padRight("  "+reasonLine, width)))
 					}
 				}
+				if preview.Description != "" {
+					lines = append(lines, "", sectionHeaderStyle.Render("Details:"))
+					for _, descLine := range strings.Split(wrapText(compat.SanitizeMetadata(preview.Description), width-4), "\n") {
+						lines = append(lines, activeActionSubStyle.Render(padRight("  "+descLine, width)))
+					}
+				}
 			} else {
 				titleLine := normalActionSubStyle.Render(selector + titleText)
 				lines = append(lines, "", titleLine)
@@ -1185,6 +1191,11 @@ func (m appModel) commandPreview(sk *model.Skill, width int) []string {
 					reasonText := wrap(compat.SanitizeMetadata(preview.Reason), width-4)
 					for _, reasonLine := range strings.Split(reasonText, "\n") {
 						lines = append(lines, normalActionSubStyle.Render("  "+reasonLine))
+					}
+				}
+				if preview.Description != "" {
+					for _, descLine := range strings.Split(wrapText(compat.SanitizeMetadata(preview.Description), width-4), "\n") {
+						lines = append(lines, normalActionSubStyle.Render("  "+descLine))
 					}
 				}
 			}
@@ -1199,6 +1210,12 @@ func (m appModel) commandPreview(sk *model.Skill, width int) []string {
 			cmdText := truncate(compat.SanitizeMetadata(preview.Command), width-4)
 			cmdLine := activeActionSubStyle.Render(padRight("  "+cmdText, width))
 			lines = append(lines, cmdLine)
+			if preview.Description != "" {
+				lines = append(lines, "", sectionHeaderStyle.Render("Details:"))
+				for _, descLine := range strings.Split(wrapText(compat.SanitizeMetadata(preview.Description), width-4), "\n") {
+					lines = append(lines, activeActionSubStyle.Render(padRight("  "+descLine, width)))
+				}
+			}
 
 		} else {
 			// Unselected Action (normal colors, subordinate metadata very dim)
@@ -1208,6 +1225,11 @@ func (m appModel) commandPreview(sk *model.Skill, width int) []string {
 			cmdText := truncate(compat.SanitizeMetadata(preview.Command), width-4)
 			cmdLine := normalActionSubStyle.Render("  " + cmdText)
 			lines = append(lines, cmdLine)
+			if preview.Description != "" {
+				for _, descLine := range strings.Split(wrapText(compat.SanitizeMetadata(preview.Description), width-4), "\n") {
+					lines = append(lines, normalActionSubStyle.Render("  "+descLine))
+				}
+			}
 		}
 	}
 	return lines
@@ -1551,6 +1573,14 @@ func (m appModel) confirmationOverlay(layout appLayout) string {
 	}
 	if command != "" {
 		lines = append(lines, sectionHeaderStyle.Render("Command"), dimStyle.Render(wrapText(command, 48)), "")
+	}
+	if m.pendingAction != nil && m.pendingAction.Description != "" {
+		lines = append(lines, sectionHeaderStyle.Render("Details"), wrapText(m.pendingAction.Description, 48), "")
+	} else if acts := m.currentActions(); m.pendingAction == nil && len(acts) > 0 && m.action < len(acts) {
+		action := acts[m.action]
+		if action.Description != "" {
+			lines = append(lines, sectionHeaderStyle.Render("Details"), wrapText(action.Description, 48), "")
+		}
 	}
 	lines = append(lines, wrapText(instruction, 48))
 

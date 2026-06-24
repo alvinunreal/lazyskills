@@ -405,6 +405,65 @@ func TestConfirmationRendersCenteredModal(t *testing.T) {
 	}
 }
 
+func TestBundleImportRequiresConfirmationBeforeApply(t *testing.T) {
+	cwd := t.TempDir()
+	bundlePath := actions.DefaultProjectBundlePath(cwd)
+	if err := os.MkdirAll(filepath.Dir(bundlePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bundle := model.SkillBundle{Version: 1, Scope: model.ScopeProject, Skills: []model.SkillBundleSkill{{Name: "Lint", Source: "owner/repo", Reference: "v2", SkillPath: "skills/lint/SKILL.md", Scope: model.ScopeProject, LockIdentity: model.SkillBundleLockIdentity{Source: "owner/repo", SourceType: "github", Reference: "v2", SkillPath: "skills/lint/SKILL.md", ComputedHash: "def"}}}}
+	if err := actions.WriteProjectSkillBundle(bundlePath, bundle); err != nil {
+		t.Fatal(err)
+	}
+	m := appModel{cwd: cwd, width: 120, height: 32, selected: 0, result: model.ScanResult{Skills: []*model.Skill{{Name: "Deploy", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo", Ref: "main", SkillPath: "skills/deploy/SKILL.md"}}}}}
+	m.commands = true
+	m.action = actionIndex(t, m, "Import project skill bundle")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next := updated.(appModel)
+	if cmd != nil || !next.confirming || next.running {
+		t.Fatalf("expected import preview to open confirmation only, confirming=%v running=%v cmd=%v", next.confirming, next.running, cmd)
+	}
+	if next.actionResult != nil {
+		t.Fatalf("expected preview phase to avoid mutation/result, got %#v", next.actionResult)
+	}
+	if !strings.Contains(next.View(), "Install 1 missing skills") || !strings.Contains(next.View(), "Skip 0 matching skills") {
+		t.Fatalf("expected preview summary in the modal, got %q", next.View())
+	}
+}
+
+func TestCommandPickerExposesProjectBundleActionsOnSourceHeader(t *testing.T) {
+	m := appModel{
+		cwd:     t.TempDir(),
+		width:   120,
+		height:  32,
+		selected: 0,
+		result: model.ScanResult{Skills: []*model.Skill{{
+			Name:       "Deploy",
+			Scope:      model.ScopeProject,
+			LocalLock:  &model.LocalLockEntry{Source: "owner/repo", Ref: "main", SkillPath: "skills/deploy/SKILL.md"},
+			CanonicalPath: "/tmp/deploy",
+		}}},
+	}
+	m.commands = true
+	acts := m.currentActions()
+	hasExport := false
+	hasImport := false
+	hasSourceAction := false
+	for _, act := range acts {
+		switch act.Title {
+		case "Export project skill bundle":
+			hasExport = true
+		case "Import project skill bundle":
+			hasImport = true
+		case "Check local source for available skills", "Update installed skills from source", "Remove installed skills from source":
+			hasSourceAction = true
+		}
+	}
+	if !hasExport || !hasImport || !hasSourceAction {
+		t.Fatalf("expected source header command picker to include bundle and source actions, got %#v", acts)
+	}
+}
+
 func TestRunningActionRendersProgressModal(t *testing.T) {
 	m := actionTestModel(t.TempDir())
 	m.running = true

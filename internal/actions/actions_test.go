@@ -2,6 +2,7 @@ package actions
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -357,5 +358,122 @@ func TestForAvailableSkillUnsafeRejection(t *testing.T) {
 		if previews[0].Available {
 			t.Errorf("expected preview to be unavailable for source=%q name=%q", tc.source, tc.name)
 		}
+	}
+}
+
+func TestProjectBundleExportBuildsProjectOnlyBundle(t *testing.T) {
+	cwd := t.TempDir()
+	project := &model.Skill{
+		Name:          "Deploy",
+		Scope:         model.ScopeProject,
+		LocalLock:     &model.LocalLockEntry{Source: "owner/repo", SourceType: "github", Ref: "main", SkillPath: "skills/deploy/SKILL.md", ComputedHash: "abc"},
+		CanonicalPath: filepath.Join(cwd, ".agents", "skills", "deploy"),
+	}
+	untracked := &model.Skill{Name: "Manual", Scope: model.ScopeProject}
+	global := &model.Skill{Name: "Global", Scope: model.ScopeGlobal, GlobalLock: &model.GlobalLockEntry{Source: "owner/global", SourceType: "github", SourceURL: "https://github.com/owner/global", Ref: "v1", SkillPath: "skills/global/SKILL.md", SkillFolderHash: "hash", InstalledAt: "now", UpdatedAt: "now"}}
+
+	bundle, summary := BuildProjectSkillBundle(cwd, []*model.Skill{project, untracked, global})
+	if summary.Path != DefaultProjectBundlePath(cwd) {
+		t.Fatalf("unexpected bundle path: %q", summary.Path)
+	}
+	if bundle.Version != 1 || bundle.Scope != model.ScopeProject {
+		t.Fatalf("unexpected bundle header: %#v", bundle)
+	}
+	if summary.Included != 1 || summary.Skipped != 1 || len(bundle.Skills) != 1 {
+		t.Fatalf("expected one exported project skill and one skipped untracked skill, summary=%#v bundle=%#v", summary, bundle)
+	}
+	entry := bundle.Skills[0]
+	if entry.Name != "Deploy" || entry.Source != "owner/repo" || entry.Reference != "main" || entry.SkillPath != "skills/deploy/SKILL.md" || entry.Scope != model.ScopeProject {
+		t.Fatalf("unexpected bundle entry: %#v", entry)
+	}
+	if entry.LockIdentity.Source != "owner/repo" || entry.LockIdentity.SourceType != "github" || entry.LockIdentity.ComputedHash != "abc" {
+		t.Fatalf("unexpected lock identity: %#v", entry.LockIdentity)
+	}
+	if len(summary.SkippedNames) != 1 || summary.SkippedNames[0] != "Manual" {
+		t.Fatalf("expected skipped untracked project skill, summary=%#v", summary)
+	}
+
+	path := filepath.Join(cwd, ".lazyskills", "skills.bundle.json")
+	if err := WriteProjectSkillBundle(path, bundle); err != nil {
+		t.Fatalf("WriteProjectSkillBundle: %v", err)
+	}
+	loaded, err := ReadProjectSkillBundle(path)
+	if err != nil {
+		t.Fatalf("ReadProjectSkillBundle: %v", err)
+	}
+	if len(loaded.Skills) != 1 || loaded.Skills[0].Name != "Deploy" {
+		t.Fatalf("unexpected round-trip bundle: %#v", loaded)
+	}
+}
+
+func TestProjectBundleImportPlanSkipsMatchesAndSurfacesConflicts(t *testing.T) {
+	cwd := t.TempDir()
+	bundlePath := DefaultProjectBundlePath(cwd)
+	current := []*model.Skill{
+		{Name: "Deploy", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo", SourceType: "github", Ref: "main", SkillPath: "skills/deploy/SKILL.md", ComputedHash: "abc"}},
+		{Name: "Shared", Scope: model.ScopeGlobal, GlobalLock: &model.GlobalLockEntry{Source: "owner/global", SourceType: "github", SourceURL: "https://github.com/owner/global", Ref: "v1", SkillPath: "skills/shared/SKILL.md", SkillFolderHash: "hash", InstalledAt: "now", UpdatedAt: "now"}},
+	}
+	bundle := model.SkillBundle{
+		Version: 1,
+		Scope:   model.ScopeProject,
+		Skills: []model.SkillBundleSkill{
+			{Name: "Deploy", Source: "owner/repo", Reference: "main", SkillPath: "skills/deploy/SKILL.md", Scope: model.ScopeProject, LockIdentity: model.SkillBundleLockIdentity{Source: "owner/repo", SourceType: "github", Reference: "main", SkillPath: "skills/deploy/SKILL.md", ComputedHash: "abc"}},
+			{Name: "Lint", Source: "owner/repo", Reference: "v2", SkillPath: "skills/lint/SKILL.md", Scope: model.ScopeProject, LockIdentity: model.SkillBundleLockIdentity{Source: "owner/repo", SourceType: "github", Reference: "v2", SkillPath: "skills/lint/SKILL.md", ComputedHash: "def"}},
+			{Name: "Shared", Source: "owner/repo", Reference: "main", SkillPath: "skills/shared/SKILL.md", Scope: model.ScopeProject, LockIdentity: model.SkillBundleLockIdentity{Source: "owner/repo", SourceType: "github", Reference: "main", SkillPath: "skills/shared/SKILL.md", ComputedHash: "ghi"}},
+		},
+	}
+	if err := WriteProjectSkillBundle(bundlePath, bundle); err != nil {
+		t.Fatalf("WriteProjectSkillBundle: %v", err)
+	}
+
+	plan, err := BuildProjectBundleImportPlan(bundlePath, current)
+	if err != nil {
+		t.Fatalf("BuildProjectBundleImportPlan: %v", err)
+	}
+	if len(plan.Skipped) != 1 || plan.Skipped[0] != "Deploy" {
+		t.Fatalf("expected matching installed skill to be skipped, plan=%#v", plan)
+	}
+	if len(plan.Installs) != 1 {
+		t.Fatalf("expected one install preview, plan=%#v", plan)
+	}
+	if !plan.Installs[0].Available || plan.Installs[0].Exec.Program == "" || !strings.Contains(plan.Installs[0].Command, "owner/repo/skills/lint#v2") {
+		t.Fatalf("expected install preview to be ready, preview=%#v", plan.Installs[0])
+	}
+	if len(plan.Conflicts) != 1 || plan.Conflicts[0].Name != "Shared" || !strings.Contains(plan.Conflicts[0].Reason, "global scope") {
+		t.Fatalf("expected conflict to be surfaced without overwrite, plan=%#v", plan)
+	}
+	if !strings.Contains(plan.Summary, "Install 1 missing skills") || !strings.Contains(plan.Summary, "Skip 1 matching skills") || !strings.Contains(plan.Summary, "conflicts") {
+		t.Fatalf("expected human-readable import summary, summary=%q", plan.Summary)
+	}
+}
+
+func TestProjectBundleActionsExposePreviewFirstFlow(t *testing.T) {
+	cwd := t.TempDir()
+	bundlePath := DefaultProjectBundlePath(cwd)
+	if err := os.MkdirAll(filepath.Dir(bundlePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	current := []*model.Skill{
+		{Name: "Deploy", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo", SourceType: "github", Ref: "main", SkillPath: "skills/deploy/SKILL.md", ComputedHash: "abc"}},
+	}
+	bundle := model.SkillBundle{Version: 1, Scope: model.ScopeProject, Skills: []model.SkillBundleSkill{{Name: "Deploy", Source: "owner/repo", Reference: "main", SkillPath: "skills/deploy/SKILL.md", Scope: model.ScopeProject, LockIdentity: model.SkillBundleLockIdentity{Source: "owner/repo", SourceType: "github", Reference: "main", SkillPath: "skills/deploy/SKILL.md", ComputedHash: "abc"}}}}
+	if err := WriteProjectSkillBundle(bundlePath, bundle); err != nil {
+		t.Fatalf("WriteProjectSkillBundle: %v", err)
+	}
+
+	previews := ProjectBundleActions(cwd, current)
+	if len(previews) != 2 {
+		t.Fatalf("expected export and import previews, got %#v", previews)
+	}
+	export := previewByTitle(t, previews, "Export project skill bundle")
+	if !export.Available || !export.RequiresConfirm || export.Exec.Internal != "bundle_export" {
+		t.Fatalf("expected export preview to be confirmable, got %#v", export)
+	}
+	importPreview := previewByTitle(t, previews, "Import project skill bundle")
+	if !importPreview.Available || !importPreview.RequiresConfirm || importPreview.Exec.Internal != "bundle_import" {
+		t.Fatalf("expected import preview to require confirmation, got %#v", importPreview)
+	}
+	if !strings.Contains(importPreview.Description, "Skip 1 matching skills") {
+		t.Fatalf("expected import preview to surface dry-run summary, got %q", importPreview.Description)
 	}
 }
