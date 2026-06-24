@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -299,6 +300,88 @@ func TestDetailRendersWarningOnlyIssuesAsWarnings(t *testing.T) {
 	out := m.detailText(80)
 	if !strings.Contains(out, "Warnings") || strings.Contains(out, "Health Issues") {
 		t.Fatalf("expected warning-only detail section, got %q", out)
+	}
+}
+
+func TestDoctorRowsAndMarkdownReportPrioritizeDeterministically(t *testing.T) {
+	m := appModel{result: model.ScanResult{
+		Cwd: "/tmp/lazyskills",
+		HealthIssues: []model.HealthIssue{
+			{Type: "workspace_info", Severity: "info", Message: "informational note", Path: "/tmp/info"},
+			{Type: "workspace_warn_b", Severity: "warning", Message: "warn b", Path: "/tmp/b"},
+			{Type: "workspace_warn_a", Severity: "warning", Message: "warn a", Path: "/tmp/a"},
+		},
+		Skills: []*model.Skill{
+			{Name: "Zulu", Scope: model.ScopeProject, HealthIssues: []model.HealthIssue{{Type: "critical_skill", Severity: "error", Message: "critical skill", Path: "/tmp/zulu"}}},
+			{Name: "Alpha", Scope: model.ScopeProject, HealthIssues: []model.HealthIssue{{Type: "info_skill", Severity: "info", Message: "info skill", Path: "/tmp/alpha"}}},
+		},
+	}}
+
+	rows := m.doctorRows()
+	if len(rows) != 5 {
+		t.Fatalf("expected 5 doctor rows, got %d: %#v", len(rows), rows)
+	}
+	if rows[0].Section != "Critical" || rows[0].Subject != "Zulu" {
+		t.Fatalf("expected critical rows first, got %#v", rows)
+	}
+	if rows[1].Section != "Warnings" || rows[1].Path != "/tmp/a" || rows[2].Path != "/tmp/b" {
+		t.Fatalf("expected warning rows to sort by path, got %#v", rows)
+	}
+	if rows[4].Section != "Info" || rows[4].Subject != "Workspace" {
+		t.Fatalf("expected info rows last, got %#v", rows)
+	}
+
+	report := m.doctorMarkdownReport()
+	if strings.Index(report, "## Critical") > strings.Index(report, "## Warnings") || strings.Index(report, "## Warnings") > strings.Index(report, "## Info") {
+		t.Fatalf("expected markdown sections in severity order, got %q", report)
+	}
+	if !strings.Contains(report, "- Critical: 1") || !strings.Contains(report, "- Warnings: 2") || !strings.Contains(report, "- Info: 2") {
+		t.Fatalf("expected markdown summary counts, got %q", report)
+	}
+}
+
+func TestDoctorSafeActionsExcludeDangerousAndPrioritizeRepairs(t *testing.T) {
+	oldLookPath := actions.LookPath
+	actions.LookPath = func(name string) (string, error) {
+		if name == "skills" {
+			return "/usr/bin/skills", nil
+		}
+		return "", exec.ErrNotFound
+	}
+	t.Cleanup(func() { actions.LookPath = oldLookPath })
+	t.Setenv("EDITOR", "vim")
+
+	skill := &model.Skill{
+		Name:          "Deploy Skill",
+		Scope:         model.ScopeProject,
+		CanonicalPath: "/tmp/deploy-skill",
+		LocalLock:     &model.LocalLockEntry{Source: "owner/repo"},
+		HealthIssues:  []model.HealthIssue{{Type: "lock_without_files", Severity: "warning", Message: "project lock entry has no matching skill on disk"}},
+	}
+	actions := doctorSafeActions(skill)
+	if len(actions) == 0 {
+		t.Fatal("expected safe doctor actions")
+	}
+	if actions[0].ID != "prune_lock" {
+		t.Fatalf("expected prune_lock to be prioritized first, got %#v", actions)
+	}
+	for _, action := range actions {
+		if action.ID == "remove" {
+			t.Fatalf("expected dangerous remove action to be excluded, got %#v", actions)
+		}
+	}
+}
+
+func TestDoctorModeHotkeyOpensReport(t *testing.T) {
+	m := appModel{width: 120, height: 32, result: model.ScanResult{Skills: []*model.Skill{{Name: "Build", Scope: model.ScopeProject}}}}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	next := updated.(appModel)
+	if !next.doctorOpen {
+		t.Fatal("expected D to open doctor mode")
+	}
+	out := next.View()
+	if !strings.Contains(out, "Doctor Mode Repair Report") {
+		t.Fatalf("expected doctor view title, got %q", out)
 	}
 }
 

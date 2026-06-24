@@ -40,6 +40,17 @@ func (m *appModel) syncViewport() {
 		m.viewport.Width = modalWidth - 4
 		m.viewport.Height = modalHeight - 6
 		m.viewport.SetContent(m.detailText(modalWidth - 4))
+	} else if m.doctorOpen {
+		modalWidth, modalHeight := layout.Width-4, layout.Height-4
+		if modalWidth < 20 {
+			modalWidth = 20
+		}
+		if modalHeight < 8 {
+			modalHeight = 8
+		}
+		m.viewport.Width = modalWidth - 4
+		m.viewport.Height = modalHeight - 6
+		m.viewport.SetContent(m.doctorText(modalWidth - 4))
 	} else {
 		_, rightWidth, topHeight, bottomHeight := m.getThreePaneLayout()
 
@@ -63,7 +74,7 @@ func (m appModel) currentViewportSyncFingerprint() string {
 	if strings.HasPrefix(selectedKey, "group:") {
 		collapsed = m.isCollapsed(strings.TrimPrefix(selectedKey, "group:"))
 	}
-	return fmt.Sprintf("%d\x00%d\x00%d\x00%d\x00%s\x00%s\x00%t\x00%t\x00%t\x00%s\x00%d\x00%t\x00%s\x00%t",
+	return fmt.Sprintf("%d\x00%d\x00%d\x00%d\x00%s\x00%s\x00%t\x00%t\x00%t\x00%t\x00%s\x00%d\x00%d\x00%t\x00%s\x00%t\x00%s",
 		m.width,
 		m.height,
 		m.selected,
@@ -72,12 +83,15 @@ func (m appModel) currentViewportSyncFingerprint() string {
 		m.search,
 		m.detailModal,
 		m.commands,
+		m.doctorOpen,
 		m.helpOpen,
 		m.modalSource,
 		m.modalSelected,
+		m.doctorSelected,
 		m.previewPending,
 		selectedKey,
 		collapsed,
+		m.doctorStatus,
 	)
 }
 

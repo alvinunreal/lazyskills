@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -256,7 +257,10 @@ func TestApplyAndChecksumMismatch(t *testing.T) {
 	}
 	// We will determine our asset based on runtime OS/Arch
 	osName := "Linux"
-	archName := "x86_64"
+	archName := runtime.GOARCH
+	if archName == "amd64" {
+		archName = "x86_64"
+	}
 	mockRel.Assets = append(mockRel.Assets, struct {
 		Name               string `json:"name"`
 		BrowserDownloadURL string `json:"browser_download_url"`

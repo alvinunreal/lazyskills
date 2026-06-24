@@ -61,6 +61,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.clampSelection()
+		m.clampDoctorSelection()
 		m.pruneSelected()
 		m.actionResult = nil
 		m.syncViewport()
@@ -378,6 +379,50 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncViewport()
 			return m, nil
 		}
+		if m.doctorOpen {
+			switch key {
+			case "esc", "q", "D":
+				m.doctorOpen = false
+				m.doctorStatus = ""
+				m.commands = false
+				m.syncViewport()
+			case "up", "k":
+				m.doctorSelected--
+				m.clampDoctorSelection()
+				m.syncViewport()
+			case "down", "j":
+				m.doctorSelected++
+				m.clampDoctorSelection()
+				m.syncViewport()
+			case "home":
+				m.doctorSelected = 0
+				m.clampDoctorSelection()
+				m.syncViewport()
+			case "end":
+				rows := m.doctorRows()
+				if len(rows) > 0 {
+					m.doctorSelected = len(rows) - 1
+					m.syncViewport()
+				}
+			case "enter", "o":
+				if action, ok := m.doctorPrimaryAction(); ok {
+					return m.startActionByID(action.ID)
+				}
+			case "c":
+				m.commands = true
+				m.action = 0
+				m.syncViewport()
+			case "C":
+				return m.startActionByID(doctorCopyActionID)
+			case "E":
+				return m.startActionByID(doctorExportActionID)
+			case "r":
+				m.doctorStatus = ""
+				m.viewport.GotoTop()
+				return m, loadSnapshot(m.cwd)
+			}
+			return m, nil
+		}
 
 		// "gg" jumps to top: a lone g arms the flag, any other key disarms it.
 		gPending := m.pendingG
@@ -422,6 +467,13 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "?":
 			m.helpOpen = true
+		case "D":
+			m.doctorOpen = true
+			m.doctorSelected = 0
+			m.doctorStatus = ""
+			m.commands = false
+			m.viewport.GotoTop()
+			m.syncViewport()
 		case "U":
 			m.appUpdateModal = true
 			m.updatingApp = false
@@ -707,6 +759,9 @@ func (m *appModel) clampAction() {
 }
 
 func (m appModel) currentActions() []actions.CommandPreview {
+	if m.doctorOpen {
+		return m.doctorCurrentActions()
+	}
 	if m.modalSource != "" {
 		child, ok := m.currentModalSelectedChild()
 		if ok {
@@ -908,6 +963,34 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 		m.commands = false
 		m.actionResult = nil
 		return m.startDiscovery(action.ConfirmValue, true)
+	}
+	if action.Exec.Internal == doctorCopyActionID {
+		m.commands = false
+		m.confirming = false
+		m.confirmInput = ""
+		m.confirmError = ""
+		m.actionResult = nil
+		m.doctorStatus = "Copied doctor report as Markdown to clipboard."
+		if err := doctorCopyMarkdown(m.doctorMarkdownReport()); err != nil {
+			m.doctorStatus = "Failed to copy doctor report: " + compat.SanitizeMetadata(err.Error())
+		}
+		m.syncViewport()
+		return m, nil
+	}
+	if action.Exec.Internal == doctorExportActionID {
+		m.commands = false
+		m.confirming = false
+		m.confirmInput = ""
+		m.confirmError = ""
+		m.actionResult = nil
+		reportPath, err := doctorExportMarkdown(m.cwd, m.doctorMarkdownReport())
+		if err != nil {
+			m.doctorStatus = "Failed to export doctor report: " + compat.SanitizeMetadata(err.Error())
+		} else {
+			m.doctorStatus = "Exported doctor report to " + compat.SanitizeMetadata(reportPath)
+		}
+		m.syncViewport()
+		return m, nil
 	}
 	if action.Exec.Internal == "enable_skill" || action.Exec.Internal == "disable_skill" {
 		m.commands = false
