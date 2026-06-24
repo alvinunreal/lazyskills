@@ -12,12 +12,27 @@ type Agent struct {
 	Name                  string
 	Display               string
 	ProjectDir            string
+	LegacyProjectDirs     []string
 	GlobalDir             string
 	SupportsGlobal        bool
 	Universal             bool
 	ShowInUniversalList   bool
 	ShowInUniversalPrompt bool
 	Detected              bool
+}
+
+func (a Agent) ProjectDirs() []string {
+	dirs := make([]string, 0, 1+len(a.LegacyProjectDirs))
+	if a.ProjectDir != "" {
+		dirs = append(dirs, a.ProjectDir)
+	}
+	for _, dir := range a.LegacyProjectDirs {
+		if dir == "" || dir == a.ProjectDir {
+			continue
+		}
+		dirs = append(dirs, dir)
+	}
+	return dirs
 }
 type Env struct {
 	Home       string
@@ -166,7 +181,7 @@ func RegistryWithEnv(e Env, cwd string) []Agent {
 		{Name: `mistral-vibe`, Display: `Mistral Vibe`, ProjectDir: `.vibe/skills`, GlobalDir: filepath.Join(e.VibeHome(), `skills`), SupportsGlobal: true, Universal: false, ShowInUniversalList: true, ShowInUniversalPrompt: true},
 		{Name: `moxby`, Display: `Moxby`, ProjectDir: `.moxby/skills`, GlobalDir: filepath.Join(e.Home, `.moxby/skills`), SupportsGlobal: true, Universal: false, ShowInUniversalList: true, ShowInUniversalPrompt: true},
 		{Name: `mux`, Display: `Mux`, ProjectDir: `.mux/skills`, GlobalDir: filepath.Join(e.Home, `.mux/skills`), SupportsGlobal: true, Universal: false, ShowInUniversalList: true, ShowInUniversalPrompt: true},
-		{Name: `opencode`, Display: `OpenCode`, ProjectDir: `.agents/skills`, GlobalDir: filepath.Join(e.ConfigHome(), `opencode/skills`), SupportsGlobal: true, Universal: true, ShowInUniversalList: true, ShowInUniversalPrompt: true},
+		{Name: `opencode`, Display: `OpenCode`, ProjectDir: `.opencode/skills`, LegacyProjectDirs: []string{`.agents/skills`}, GlobalDir: filepath.Join(e.ConfigHome(), `opencode/skills`), SupportsGlobal: true, Universal: true, ShowInUniversalList: true, ShowInUniversalPrompt: true},
 		{Name: `openhands`, Display: `OpenHands`, ProjectDir: `.openhands/skills`, GlobalDir: filepath.Join(e.Home, `.openhands/skills`), SupportsGlobal: true, Universal: false, ShowInUniversalList: true, ShowInUniversalPrompt: true},
 		{Name: `ona`, Display: `Ona`, ProjectDir: `.ona/skills`, GlobalDir: filepath.Join(e.Home, `.ona/skills`), SupportsGlobal: true, Universal: false, ShowInUniversalList: true, ShowInUniversalPrompt: true},
 		{Name: `pi`, Display: `Pi`, ProjectDir: `.pi/skills`, GlobalDir: filepath.Join(e.Home, `.pi/agent/skills`), SupportsGlobal: true, Universal: false, ShowInUniversalList: true, ShowInUniversalPrompt: true},
@@ -290,9 +305,11 @@ func LocationsWithEnv(cwd string, e Env) []Location {
 		}
 	}
 	for _, a := range registry {
-		projectRoot := filepath.Join(cwd, filepath.FromSlash(a.ProjectDir))
-		if !globalRoots[filepath.Clean(projectRoot)] {
-			add(Location{Root: projectRoot, Scope: model.ScopeProject, AgentName: a.Name, Canonical: a.Universal})
+		for _, projectDir := range a.ProjectDirs() {
+			projectRoot := filepath.Join(cwd, filepath.FromSlash(projectDir))
+			if !globalRoots[filepath.Clean(projectRoot)] {
+				add(Location{Root: projectRoot, Scope: model.ScopeProject, AgentName: a.Name, Canonical: a.Universal})
+			}
 		}
 		if a.Universal && a.SupportsGlobal {
 			add(Location{Root: globalCanonical, Scope: model.ScopeGlobal, AgentName: a.Name, Canonical: true})

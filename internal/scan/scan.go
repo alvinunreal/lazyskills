@@ -147,7 +147,11 @@ func agentStates(cwd string) []model.AgentState {
 	registry := agents.RegistryWithEnv(agents.DefaultEnv(), cwd)
 	states := make([]model.AgentState, 0, len(registry))
 	for _, agent := range registry {
-		projectDir := filepath.Join(cwd, filepath.FromSlash(agent.ProjectDir))
+		projectDirs := agent.ProjectDirs()
+		if len(projectDirs) == 0 {
+			continue
+		}
+		projectDir := filepath.Join(cwd, filepath.FromSlash(projectDirs[0]))
 		state := model.AgentState{
 			Name:             agent.Name,
 			Display:          compat.SanitizeMetadata(agent.Display),
@@ -411,14 +415,30 @@ func scanLocationRecords(loc agents.Location) []scannedLocationRecord {
 func applyScannedLocationRecords(loc agents.Location, skills map[string]*model.Skill, records []scannedLocationRecord) {
 	for _, record := range records {
 		sk := ensureSkill(skills, loc.Scope, record.keyHint, record.name, record.description)
-		if record.canonicalPath != "" && sk.CanonicalPath == "" {
+		preferNativeRecord := record.canonicalPath != "" && isOpenCodeNativePath(record.canonicalPath) && !isOpenCodeNativePath(sk.CanonicalPath)
+		if preferNativeRecord {
+			if record.name != "" {
+				sk.Name = record.name
+			}
+			if record.description != "" {
+				sk.Description = record.description
+			}
+			if record.skillPath != "" {
+				sk.SkillPath = record.skillPath
+			}
+			if record.preview != "" {
+				sk.Preview = record.preview
+			}
+		} else {
+			if record.skillPath != "" && sk.SkillPath == "" {
+				sk.SkillPath = record.skillPath
+			}
+			if record.preview != "" && sk.Preview == "" {
+				sk.Preview = record.preview
+			}
+		}
+		if record.canonicalPath != "" && (preferNativeRecord || sk.CanonicalPath == "") {
 			sk.CanonicalPath = record.canonicalPath
-		}
-		if record.skillPath != "" && sk.SkillPath == "" {
-			sk.SkillPath = record.skillPath
-		}
-		if record.preview != "" && sk.Preview == "" {
-			sk.Preview = record.preview
 		}
 		observed := record.observed
 		observed.Agent = loc.AgentName
@@ -427,6 +447,13 @@ func applyScannedLocationRecords(loc agents.Location, skills map[string]*model.S
 			sk.AddHealthIssue(issue)
 		}
 	}
+}
+
+func isOpenCodeNativePath(path string) bool {
+	if path == "" {
+		return false
+	}
+	return strings.Contains(filepath.ToSlash(filepath.Clean(path)), "/.opencode/skills/")
 }
 
 func ensureSkill(skills map[string]*model.Skill, scope model.Scope, keyHint, name, desc string) *model.Skill {

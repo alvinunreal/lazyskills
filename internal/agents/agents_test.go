@@ -3,6 +3,8 @@ package agents
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/alvinunreal/lazyskills/internal/model"
 )
 
 func testEnv(home string, existing ...string) Env {
@@ -85,6 +87,41 @@ func TestEnvOverridesForAgentHomes(t *testing.T) {
 	}
 	if got := agentByName(t, registry, "claude-code").GlobalDir; got != filepath.Join("/custom/claude", "skills") {
 		t.Fatalf("unexpected claude global dir: %q", got)
+	}
+}
+
+func TestOpenCodeUsesNativeProjectDirAndKeepsLegacyAlias(t *testing.T) {
+	const home = "/home/test"
+	const cwd = "/repo"
+	agent := agentByName(t, RegistryWithEnv(testEnv(home), cwd), "opencode")
+	if agent.ProjectDir != ".opencode/skills" {
+		t.Fatalf("expected OpenCode native project dir, got %q", agent.ProjectDir)
+	}
+	if len(agent.LegacyProjectDirs) != 1 || agent.LegacyProjectDirs[0] != ".agents/skills" {
+		t.Fatalf("expected OpenCode legacy alias to keep .agents/skills, got %#v", agent.LegacyProjectDirs)
+	}
+	if dirs := agent.ProjectDirs(); len(dirs) != 2 || dirs[0] != ".opencode/skills" || dirs[1] != ".agents/skills" {
+		t.Fatalf("expected OpenCode project dirs to preserve native and legacy paths, got %#v", dirs)
+	}
+
+	locations := LocationsWithEnv(cwd, testEnv(home))
+	projectRoots := map[string]bool{}
+	canonicalRoots := map[string]bool{}
+	for _, loc := range locations {
+		if loc.AgentName == "opencode" && loc.Scope == model.ScopeProject {
+			projectRoots[filepath.Clean(loc.Root)] = true
+			if loc.Canonical {
+				canonicalRoots[filepath.Clean(loc.Root)] = true
+			}
+		}
+	}
+	for _, root := range []string{filepath.Join(cwd, ".opencode", "skills"), filepath.Join(cwd, ".agents", "skills")} {
+		if !projectRoots[root] {
+			t.Fatalf("expected OpenCode project location %q to be registered, got %#v", root, projectRoots)
+		}
+		if !canonicalRoots[root] {
+			t.Fatalf("expected OpenCode project location %q to be canonical, got %#v", root, canonicalRoots)
+		}
 	}
 }
 
