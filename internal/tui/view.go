@@ -47,6 +47,9 @@ func (m appModel) View() string {
 	if m.commands {
 		return m.commandsOverlay(layout)
 	}
+	if m.doctorOpen {
+		return m.doctorOverlay(layout)
+	}
 
 	viewModel := m
 	viewModel.width = layout.Width
@@ -1296,7 +1299,7 @@ func (m appModel) footerText(width int) string {
 				if discoverable, _ := m.isSourceDiscoverable(row.groupName); discoverable {
 					parts = append(parts, "d scan")
 				}
-				parts = append(parts, "c actions", "? help")
+				parts = append(parts, "c actions", "D doctor", "? help")
 				text = strings.Join(parts, " · ")
 			} else {
 				parts := []string{"enter open"}
@@ -1310,11 +1313,11 @@ func (m appModel) footerText(width int) string {
 				if hasAvailableAction(footerActions, preferredRemoveActionID(m.selectedCount())) {
 					parts = append(parts, "x remove")
 				}
-				parts = append(parts, "? help")
+				parts = append(parts, "D doctor", "? help")
 				text = strings.Join(parts, " · ")
 			}
 		} else {
-			text = "enter open · c actions · ? help"
+			text = "enter open · c actions · D doctor · ? help"
 		}
 	}
 	isNormalState := !m.running && !m.confirming && !m.searching && !m.detailModal && !m.commands && !m.helpOpen
@@ -1381,6 +1384,7 @@ func (m appModel) helpModalOverlay(layout appLayout) string {
 		"  e               Enable / disable selected skill or source group",
 		"  c               Open command picker menu",
 		"  u / x           Quick reinstall-update / remove for selection",
+		"  D               Open Doctor Mode prioritized repair report",
 		"  U               Check/run LazySkills application update",
 		"  d               Check local or remote source for available skills (Source row)",
 		"  r               Refresh scan snapshot",

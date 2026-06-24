@@ -72,6 +72,9 @@ type appModel struct {
 	running                 bool
 	runningTitle            string
 	actionResult            *runner.Result
+	doctorOpen              bool
+	doctorSelected          int
+	doctorStatus            string
 	width                   int
 	height                  int
 	viewport                viewport.Model
