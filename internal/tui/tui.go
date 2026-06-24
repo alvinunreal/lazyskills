@@ -44,7 +44,9 @@ type DiscoveredSkill struct {
 	Description string
 	Source      string
 	SkillPath   string
+	RelativePath string
 	Preview     string
+	NewSinceLastScan bool
 }
 
 type SourceDiscovery struct {
@@ -164,6 +166,7 @@ type snapshotMsg struct {
 type discoveryResultMsg struct {
 	groupName string
 	skills    []DiscoveredSkill
+	previous  SourceDiscovery
 	err       error
 }
 
@@ -189,13 +192,17 @@ func Run(cwd string) error {
 }
 
 func newModel(cwd string) appModel {
+	discovery, err := loadRadarCache(cwd)
+	if err != nil {
+		discovery = make(map[string]SourceDiscovery)
+	}
 	return appModel{
 		cwd:              cwd,
 		viewport:         viewport.New(0, 0),
 		metadataViewport: viewport.New(0, 0),
 		previewViewport:  viewport.New(0, 0),
 		collapsedGroups:  make(map[string]bool),
-		discovery:        make(map[string]SourceDiscovery),
+		discovery:        discovery,
 		previewCache:     make(map[previewCacheKey][]string),
 	}
 }

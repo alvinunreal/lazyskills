@@ -85,6 +85,17 @@ func AppLevelActionsWithResolver(resolve SkillsResolver) []CommandPreview {
 
 	previews := []CommandPreview{}
 
+	// radar scan all trusted sources
+	radarPreview := CommandPreview{
+		ID:          "radar_scan_all",
+		Title:       "Scan trusted sources for new skills",
+		Description: "Scan all known tracked sources and refresh new-skill indicators.",
+		Command:     "scan trusted sources",
+		Exec:        ExecSpec{Internal: "radar_scan_all"},
+		Available:   true,
+	}
+	previews = append(previews, radarPreview)
+
 	// skills init
 	initArgs := append([]string{}, baseArgs...)
 	initArgs = append(initArgs, "init")

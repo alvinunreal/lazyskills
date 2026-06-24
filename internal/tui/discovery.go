@@ -117,11 +117,16 @@ func discoverSourceSkills(sourceRoot string) ([]DiscoveredSkill, error) {
 				if readErr == nil {
 					previewStr = string(contentBytes)
 				}
+				relPath, relErr := filepath.Rel(sourceRoot, path)
+				if relErr != nil {
+					relPath = filepath.Base(path)
+				}
 				discovered = append(discovered, DiscoveredSkill{
-					Name:        compat.SanitizeMetadata(doc.Name),
-					Description: compat.SanitizeMetadata(doc.Description),
-					SkillPath:   compat.SanitizeMetadata(path),
-					Preview:     compat.SanitizePreviewContent(previewStr),
+					Name:         compat.SanitizeMetadata(doc.Name),
+					Description:  compat.SanitizeMetadata(doc.Description),
+					SkillPath:    compat.SanitizeMetadata(path),
+					RelativePath: compat.SanitizeMetadata(filepath.ToSlash(relPath)),
+					Preview:      compat.SanitizePreviewContent(previewStr),
 				})
 			}
 		}
@@ -251,8 +256,11 @@ func (m appModel) startDiscovery(groupName string, force bool) (tea.Model, tea.C
 	if m.discovery == nil {
 		m.discovery = make(map[string]SourceDiscovery)
 	}
+	previous := m.discovery[groupName]
 	m.discovery[groupName] = SourceDiscovery{
 		Status: DiscoveryLoading,
+		Skills: cloneDiscoveredSkills(previous.Skills),
+		ScannedAt: previous.ScannedAt,
 	}
 
 	discoverable, reason := m.isSourceDiscoverable(groupName)
@@ -274,6 +282,7 @@ func (m appModel) startDiscovery(groupName string, force bool) (tea.Model, tea.C
 			return discoveryResultMsg{
 				groupName: groupName,
 				skills:    skills,
+				previous:  previous,
 				err:       err,
 			}
 		}
@@ -300,6 +309,7 @@ func (m appModel) startDiscovery(groupName string, force bool) (tea.Model, tea.C
 		if err != nil {
 			return discoveryResultMsg{
 				groupName: groupName,
+				previous:  previous,
 				err:       errors.New(compat.SanitizeMetadata(err.Error())),
 			}
 		}
@@ -312,9 +322,30 @@ func (m appModel) startDiscovery(groupName string, force bool) (tea.Model, tea.C
 		return discoveryResultMsg{
 			groupName: groupName,
 			skills:    skills,
+			previous:  previous,
 			err:       err,
 		}
 	}
+}
+
+func (m appModel) startRadarScan(force bool) (tea.Model, tea.Cmd) {
+	groups := m.trackedSourceGroups()
+	if len(groups) == 0 {
+		return m, nil
+	}
+	cmds := make([]tea.Cmd, 0, len(groups))
+	for _, group := range groups {
+		modelTmp, cmd := m.startDiscovery(group, force)
+		m = modelTmp.(appModel)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	m.syncViewport()
+	if len(cmds) == 0 {
+		return m, nil
+	}
+	return m, tea.Batch(cmds...)
 }
 
 // discoveryCacheRoot is the directory where remote source clones are cached

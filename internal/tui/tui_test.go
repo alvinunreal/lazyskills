@@ -783,10 +783,27 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
+	radarDir, err := os.MkdirTemp("", "lazyskills-test-radar-*")
+	if err != nil {
+		panic(err)
+	}
 	discoveryCacheRoot = func() (string, error) { return dir, nil }
+	radarCacheDir = func() (string, error) { return radarDir, nil }
 	code := m.Run()
 	os.RemoveAll(dir)
+	os.RemoveAll(radarDir)
 	os.Exit(code)
+}
+
+func writeRadarSkill(t *testing.T, dir, name, desc string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: " + name + "\ndescription: " + desc + "\n---\n\n# " + name + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCachedSourceCloneReuse(t *testing.T) {
@@ -2070,8 +2087,13 @@ func TestRemoteDiscoverySuccess(t *testing.T) {
 	if !foundAvailable {
 		t.Fatalf("expected 'Remote Skill' among discovered skills, got %#v", next.discovery["owner/repo"].Skills)
 	}
-	if next.availableCount("owner/repo") < 1 {
-		t.Fatalf("expected at least one available (uninstalled) skill, got %d", next.availableCount("owner/repo"))
+	if next.availableCount("owner/repo") != 0 {
+		t.Fatalf("expected first scan baseline to show 0 new skills, got %d", next.availableCount("owner/repo"))
+	}
+	for _, ds := range next.discovery["owner/repo"].Skills {
+		if ds.Name == "Remote Skill" && ds.NewSinceLastScan {
+			t.Fatal("expected first scan discovered skill to be available, not new")
+		}
 	}
 }
 
@@ -2105,6 +2127,272 @@ func TestRemoteDiscoveryFailure(t *testing.T) {
 	}
 	if !strings.Contains(disc.Error, "network connection error") {
 		t.Fatalf("expected error to contain network connection error, got %s", disc.Error)
+	}
+}
+
+func TestRadarScanAllKeyStartsTrackedSources(t *testing.T) {
+	localRoot := t.TempDir()
+	writeRadarSkill(t, filepath.Join(localRoot, "skills", "alpha"), "Alpha", "Alpha local skill")
+
+	m := appModel{
+		width:  120,
+		height: 32,
+		result: model.ScanResult{Skills: []*model.Skill{
+			{Name: "Alpha", Scope: model.ScopeProject, CanonicalPath: filepath.Join(localRoot, "skills", "alpha"), LocalLock: &model.LocalLockEntry{Source: "local/repo", SkillPath: "skills/alpha/SKILL.md"}},
+			{Name: "Remote", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+		}},
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	next := updated.(appModel)
+	if cmd == nil {
+		t.Fatal("expected D to start a scan-all command batch")
+	}
+	if next.discovery["local/repo"].Status != DiscoveryLoading || next.discovery["owner/repo"].Status != DiscoveryLoading {
+		t.Fatalf("expected both tracked sources to enter loading state, got local=%s remote=%s", next.discovery["local/repo"].Status, next.discovery["owner/repo"].Status)
+	}
+}
+
+func TestRadarScanIsolatesSourceFailures(t *testing.T) {
+	oldGitClone := gitClone
+	defer func() { gitClone = oldGitClone }()
+	gitClone = func(url, ref, tempDir string) error {
+		return fmt.Errorf("remote source unavailable")
+	}
+
+	localRoot := t.TempDir()
+	writeRadarSkill(t, filepath.Join(localRoot, "skills", "alpha"), "Alpha", "Alpha local skill")
+
+	m := appModel{
+		cwd: t.TempDir(),
+		result: model.ScanResult{Skills: []*model.Skill{
+			{Name: "Alpha", Scope: model.ScopeProject, CanonicalPath: filepath.Join(localRoot, "skills", "alpha"), LocalLock: &model.LocalLockEntry{Source: "local/repo", SkillPath: "skills/alpha/SKILL.md"}},
+			{Name: "Remote", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+		}},
+	}
+
+	updated, localCmd := m.startDiscovery("local/repo", true)
+	m = updated.(appModel)
+	updated, remoteCmd := m.startDiscovery("owner/repo", true)
+	m = updated.(appModel)
+	if localCmd == nil || remoteCmd == nil {
+		t.Fatalf("expected both source scans to start, local=%v remote=%v", localCmd, remoteCmd)
+	}
+
+	if msg := localCmd(); msg != nil {
+		updated, _ = m.Update(msg)
+		m = updated.(appModel)
+	}
+	if msg := remoteCmd(); msg != nil {
+		updated, _ = m.Update(msg)
+		m = updated.(appModel)
+	}
+
+	if m.discovery["local/repo"].Status != DiscoveryReady {
+		t.Fatalf("expected local source to succeed, got %s", m.discovery["local/repo"].Status)
+	}
+	if m.discovery["owner/repo"].Status != DiscoveryFailed {
+		t.Fatalf("expected remote source to fail, got %s", m.discovery["owner/repo"].Status)
+	}
+	if got := m.availableCount("local/repo"); got != 0 {
+		t.Fatalf("expected no new local skills after first scan from same model baseline, got %d", got)
+	}
+}
+
+func TestRadarDeltaPersistsAcrossModels(t *testing.T) {
+	cwd := t.TempDir()
+	sourceRoot := filepath.Join(t.TempDir(), "source-root")
+	writeRadarSkill(t, filepath.Join(sourceRoot, "skills", "alpha"), "Alpha", "Alpha local skill")
+	writeRadarSkill(t, filepath.Join(sourceRoot, "skills", "beta"), "Beta", "Beta local skill")
+
+	baseResult := model.ScanResult{Skills: []*model.Skill{{
+		Name:          "Alpha",
+		Scope:         model.ScopeProject,
+		CanonicalPath: filepath.Join(sourceRoot, "skills", "alpha"),
+		LocalLock:     &model.LocalLockEntry{Source: "local/repo", SkillPath: "skills/alpha/SKILL.md"},
+	}}}
+
+	first := newModel(cwd)
+	first.result = baseResult
+	updated, cmd := first.startDiscovery("local/repo", true)
+	if cmd == nil {
+		t.Fatal("expected first local discovery command")
+	}
+	msg := cmd()
+	updated, _ = updated.Update(msg)
+	firstDone := updated.(appModel)
+	if firstDone.discovery["local/repo"].Status != DiscoveryReady {
+		t.Fatalf("expected first scan ready, got %s", firstDone.discovery["local/repo"].Status)
+	}
+
+	// Fresh model must reload the persisted scan state from disk.
+	second := newModel(cwd)
+	second.result = baseResult
+	writeRadarSkill(t, filepath.Join(sourceRoot, "skills", "gamma"), "Gamma", "Gamma local skill")
+	updated, cmd = second.startDiscovery("local/repo", true)
+	if cmd == nil {
+		t.Fatal("expected second local discovery command")
+	}
+	msg = cmd()
+	updated, _ = updated.Update(msg)
+	secondDone := updated.(appModel)
+	disc := secondDone.discovery["local/repo"]
+	if disc.Status != DiscoveryReady {
+		t.Fatalf("expected second scan ready, got %s", disc.Status)
+	}
+	if got := secondDone.availableCount("local/repo"); got != 1 {
+		t.Fatalf("expected 1 new skill since last scan, got %d", got)
+	}
+	var sawBeta, sawGamma bool
+	for _, cr := range secondDone.modalChildRows("local/repo") {
+		if cr.isAvailable && cr.discoveredSkill != nil {
+			switch cr.discoveredSkill.Name {
+			case "Beta":
+				sawBeta = true
+				if cr.isNew {
+					t.Fatal("expected Beta to be treated as previously known, not new")
+				}
+			case "Gamma":
+				sawGamma = true
+				if !cr.isNew {
+					t.Fatal("expected Gamma to be marked new since last scan")
+				}
+			}
+		}
+	}
+	if !sawBeta || !sawGamma {
+		t.Fatalf("expected both Beta and Gamma to be present in modal rows, got beta=%v gamma=%v", sawBeta, sawGamma)
+	}
+	if !strings.Contains(secondDone.listPane(20, 120), "+1 new") {
+		t.Fatal("expected source header to show +1 new")
+	}
+	oldLookPath := actions.LookPath
+	actions.LookPath = func(name string) (string, error) {
+		return "/mock/bin/" + name, nil
+	}
+	t.Cleanup(func() { actions.LookPath = oldLookPath })
+	rows := secondDone.modalChildRows("local/repo")
+	for i, cr := range rows {
+		if cr.isAvailable && cr.discoveredSkill != nil && cr.discoveredSkill.Name == "Gamma" {
+			secondDone.detailModal = true
+			secondDone.modalSource = "local/repo"
+			secondDone.modalSelected = i
+			modalOut := strings.Join(secondDone.sourceModalDetailLines(80), "\n")
+			if !strings.Contains(modalOut, "Installed Skills") || !strings.Contains(modalOut, "Available Skills") || !strings.Contains(modalOut, "New Since Last Scan") {
+				t.Fatalf("expected source modal sections for installed/available/new, got %q", modalOut)
+			}
+			acts := secondDone.currentActions()
+			found := false
+			for _, act := range acts {
+				if act.ID == "install_skill" && act.Available {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatal("expected install action to remain available from new entries")
+			}
+			break
+		}
+	}
+}
+
+func TestRadarCachePreservesFailedSourceEntriesOnMerge(t *testing.T) {
+	cacheCwd := t.TempDir()
+	cacheDir := t.TempDir()
+	oldRadarCacheDir := radarCacheDir
+	defer func() { radarCacheDir = oldRadarCacheDir }()
+	radarCacheDir = func() (string, error) { return cacheDir, nil }
+
+	ownerScannedAt := time.Now().Add(-10 * time.Minute)
+	localScannedAt := time.Now().Add(-8 * time.Minute)
+	seed := map[string]SourceDiscovery{
+		"owner/repo": {
+			Status:    DiscoveryReady,
+			ScannedAt: ownerScannedAt,
+			Skills: []DiscoveredSkill{{
+				Name:         "Stale",
+				Source:       "owner/repo",
+				RelativePath: "skills/stale/SKILL.md",
+			}},
+		},
+		"local/repo": {
+			Status:    DiscoveryReady,
+			ScannedAt: localScannedAt,
+			Skills: []DiscoveredSkill{{
+				Name:         "Local",
+				Source:       "local/repo",
+				RelativePath: "skills/local/SKILL.md",
+			}},
+		},
+	}
+	if err := saveRadarCache(cacheCwd, seed); err != nil {
+		t.Fatal(err)
+	}
+
+	current := map[string]SourceDiscovery{
+		"owner/repo": {Status: DiscoveryFailed, Error: "scan failed"},
+		"local/repo": {
+			Status:    DiscoveryReady,
+			ScannedAt: time.Now(),
+			Skills: []DiscoveredSkill{{
+				Name:         "Local",
+				Source:       "local/repo",
+				RelativePath: "skills/local/SKILL.md",
+			}, {
+				Name:         "Fresh",
+				Source:       "local/repo",
+				RelativePath: "skills/fresh/SKILL.md",
+			}},
+		},
+	}
+	if err := saveRadarCache(cacheCwd, current); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := loadRadarCache(cacheCwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, ok := loaded["owner/repo"]
+	if !ok {
+		t.Fatal("expected failed source cache entry to remain on disk")
+	}
+	if !owner.ScannedAt.Equal(ownerScannedAt) {
+		t.Fatalf("expected failed source timestamp to remain %v, got %v", ownerScannedAt, owner.ScannedAt)
+	}
+	if len(owner.Skills) != 1 || owner.Skills[0].Name != "Stale" {
+		t.Fatalf("expected preserved failed source skills, got %#v", owner.Skills)
+	}
+	local, ok := loaded["local/repo"]
+	if !ok {
+		t.Fatal("expected successful source cache entry to remain on disk")
+	}
+	if len(local.Skills) != 2 {
+		t.Fatalf("expected refreshed successful source skills, got %#v", local.Skills)
+	}
+	if !local.ScannedAt.After(localScannedAt) {
+		t.Fatalf("expected successful source timestamp to refresh, got %v", local.ScannedAt)
+	}
+}
+
+func TestSourceModalHidesAllInstalledWhileScanPendingWithoutCache(t *testing.T) {
+	m := appModel{
+		width:       120,
+		height:      32,
+		modalSource: "owner/repo",
+		detailModal: true,
+		result: model.ScanResult{Skills: []*model.Skill{{Name: "InstalledSkill", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo"}}}},
+	}
+	for _, disc := range []SourceDiscovery{
+		{Status: DiscoveryLoading},
+		{Status: DiscoveryFailed, Error: "scan failed"},
+	} {
+		m.discovery = map[string]SourceDiscovery{"owner/repo": disc}
+		out := strings.Join(m.sourceModalDetailLines(80), "\n")
+		if strings.Contains(out, "All skills from this source are installed.") {
+			t.Fatalf("did not expect all-installed fallback for status %s without cached rows, got %q", disc.Status, out)
+		}
 	}
 }
 

@@ -267,8 +267,12 @@ func containsArg(args []string, want string) bool {
 
 func TestAppLevelActions(t *testing.T) {
 	previews := AppLevelActions()
-	if len(previews) != 3 {
-		t.Fatalf("expected 3 app-level actions, got %d", len(previews))
+	if len(previews) != 4 {
+		t.Fatalf("expected 4 app-level actions, got %d", len(previews))
+	}
+	radarAct := previewByTitle(t, previews, "Scan trusted sources for new skills")
+	if radarAct.ID != "radar_scan_all" || !radarAct.Available || radarAct.Exec.Internal != "radar_scan_all" {
+		t.Errorf("unexpected radar scan preview: %+v", radarAct)
 	}
 	initAct := previewByTitle(t, previews, "Initialize skills in project")
 	if initAct.ID != "skills_init" || !initAct.Mutates || !initAct.RequiresConfirm {

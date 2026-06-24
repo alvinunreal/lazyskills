@@ -65,19 +65,35 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.actionResult = nil
 		m.syncViewport()
 	case discoveryResultMsg:
-		disc := SourceDiscovery{
-			Status:    DiscoveryReady,
-			Skills:    msg.skills,
-			ScannedAt: time.Now(),
-		}
-		if msg.err != nil {
-			disc.Status = DiscoveryFailed
-			disc.Error = msg.err.Error()
-		}
 		if m.discovery == nil {
 			m.discovery = make(map[string]SourceDiscovery)
 		}
+		installed := m.installedSkillNames(msg.groupName)
+		prev := msg.previous
+		baselineEstablished := !prev.ScannedAt.IsZero() || len(prev.Skills) > 0
+		disc := SourceDiscovery{}
+		if msg.err != nil {
+			disc = SourceDiscovery{
+				Status:    DiscoveryFailed,
+				Error:     msg.err.Error(),
+				ScannedAt: prev.ScannedAt,
+				Skills:    cloneDiscoveredSkills(prev.Skills),
+			}
+			if len(disc.Skills) == 0 && len(msg.skills) > 0 {
+				disc.Skills = classifyDiscoveredSkills(msg.skills, nil, installed, false)
+				disc.ScannedAt = time.Now()
+			}
+		} else {
+			disc = SourceDiscovery{
+				Status:    DiscoveryReady,
+				Skills:    classifyDiscoveredSkills(msg.skills, prev.Skills, installed, baselineEstablished),
+				ScannedAt: time.Now(),
+			}
+		}
 		m.discovery[msg.groupName] = disc
+		if disc.Status == DiscoveryReady {
+			_ = saveRadarCache(m.cwd, m.discovery)
+		}
 		m.clampSelection()
 		m.syncViewport()
 	case actionResultMsg:
@@ -428,6 +444,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateSuccess = false
 			m.updateError = nil
 			m.syncViewport()
+		case "D":
+			return m.startRadarScan(true)
 		case "c":
 			m.commands = !m.commands
 			m.action = 0
@@ -803,6 +821,7 @@ func (m appModel) startCurrentSkillActionByID(id string) (tea.Model, tea.Cmd) {
 
 type modalChildRow struct {
 	isAvailable     bool
+	isNew           bool
 	skill           *model.Skill
 	discoveredSkill *DiscoveredSkill
 }
@@ -813,21 +832,26 @@ func (m appModel) modalChildRows(groupName string) []modalChildRow {
 	for _, sk := range m.sourceGroupSkills(groupName) {
 		rows = append(rows, modalChildRow{
 			isAvailable: false,
+			isNew:       false,
 			skill:       sk,
 		})
 	}
-	// 2. Available skills
+	// 2. Available and new skills
 	disc, ok := m.discovery[groupName]
-	if ok && disc.Status == DiscoveryReady {
+	if ok && len(disc.Skills) > 0 {
 		installed := m.installedSkillNames(groupName)
-		for i, ds := range disc.Skills {
-			if !isSkillNameInstalled(ds.Name, installed) {
+		available, newly := partitionDiscoveredSkills(disc.Skills, installed)
+		appendRows := func(skills []DiscoveredSkill, isNew bool) {
+			for i := range skills {
 				rows = append(rows, modalChildRow{
 					isAvailable:     true,
-					discoveredSkill: &disc.Skills[i],
+					isNew:           isNew,
+					discoveredSkill: &skills[i],
 				})
 			}
 		}
+		appendRows(available, false)
+		appendRows(newly, true)
 	}
 	return rows
 }
@@ -904,6 +928,11 @@ func requiresExactConfirmation(action actions.CommandPreview) bool {
 }
 
 func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.Cmd) {
+	if action.Exec.Internal == "radar_scan_all" {
+		m.commands = false
+		m.actionResult = nil
+		return m.startRadarScan(true)
+	}
 	if action.ID == "source_discover" {
 		m.commands = false
 		m.actionResult = nil
