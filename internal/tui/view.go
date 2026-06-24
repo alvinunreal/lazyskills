@@ -839,6 +839,17 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 	}
 
 	lines = append(lines, formatMetaLine("Health:", healthVal, width))
+	filterVal := compat.SanitizeMetadata(m.modalSearch)
+	if filterVal == "" {
+		if m.modalSearching {
+			filterVal = "type to filter discovered skills"
+		} else {
+			filterVal = "press / to filter discovered skills"
+		}
+	} else if m.modalSearching {
+		filterVal += "_"
+	}
+	lines = append(lines, formatMetaLine("Filter:", filterVal, width))
 
 	if len(skillIssues) > 0 {
 		hasErrors := false
@@ -871,7 +882,7 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 
 	lines = append(lines, "")
 
-	childRows := m.modalChildRows(groupName)
+	childRows := m.filteredModalChildRows(groupName)
 
 	lines = append(lines, sectionHeaderStyle.Render("Installed Skills:"))
 	installedCount := 0
@@ -898,7 +909,11 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 		}
 	}
 	if installedCount == 0 {
-		lines = append(lines, "  No installed skills under this source.")
+		if m.modalSearch != "" {
+			lines = append(lines, "  No installed skills matched this filter.")
+		} else {
+			lines = append(lines, "  No installed skills under this source.")
+		}
 	}
 
 	lines = append(lines, "")
@@ -942,7 +957,11 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 				}
 			}
 			if availableCount == 0 {
-				lines = append(lines, "  All skills from this source are installed.")
+				if m.modalSearch != "" {
+					lines = append(lines, "  No available skills matched this filter.")
+				} else {
+					lines = append(lines, "  All skills from this source are installed.")
+				}
 			}
 		}
 	}
@@ -1450,7 +1469,10 @@ func (m appModel) detailModalTitle() string {
 func (m appModel) detailModalHelpLine() string {
 	modalActions := m.currentActions()
 	if m.modalSource != "" {
-		parts := []string{"esc/q close", "↑/↓ select"}
+		if m.modalSearching {
+			return strings.Join([]string{"type to filter", "enter done", "esc done"}, " · ")
+		}
+		parts := []string{"esc/q close", "↑/↓ select", "/ filter"}
 		if child, ok := m.currentModalSelectedChild(); ok {
 			if child.isAvailable && hasAvailableAction(modalActions, "install_skill") {
 				parts = append(parts, "enter install")
@@ -1484,10 +1506,16 @@ func (m *appModel) ensureSourceModalSelectionVisible() {
 	if m.modalSource == "" {
 		return
 	}
+	m.clampSourceModalSelection()
+	childRows := m.filteredModalChildRows(m.modalSource)
+	if len(childRows) == 0 {
+		m.viewport.GotoTop()
+		return
+	}
 	// The source modal renders source metadata before the child list. Keep a
 	// little context above the selected child rather than treating modalSelected
 	// as a raw viewport line number.
-	selectedLine := 8 + m.modalSelected
+	selectedLine := 9 + m.modalSelected
 	if selectedLine < 0 {
 		selectedLine = 0
 	}

@@ -62,6 +62,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.clampSelection()
+		m.clampSourceModalSelection()
 		m.pruneSelected()
 		m.actionResult = nil
 		m.syncViewport()
@@ -79,6 +80,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.discovery = make(map[string]SourceDiscovery)
 		}
 		m.discovery[msg.groupName] = disc
+		m.clampSourceModalSelection()
 		m.clampSelection()
 		m.syncViewport()
 	case actionResultMsg:
@@ -310,19 +312,53 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.detailModal {
+			if m.modalSource != "" && m.modalSearching {
+				switch key {
+				case "esc", "enter":
+					m.modalSearching = false
+					m.syncViewport()
+					return m, nil
+				case "ctrl+c":
+					return m, tea.Quit
+				case "backspace", "ctrl+h":
+					if len(m.modalSearch) > 0 {
+						m.modalSearch = m.modalSearch[:len(m.modalSearch)-1]
+						m.modalSelected = 0
+					}
+				default:
+					if len(key) == 1 {
+						m.modalSearch += key
+						m.modalSelected = 0
+					}
+				}
+				m.clampSourceModalSelection()
+				m.ensureSourceModalSelectionVisible()
+				m.syncViewport()
+				return m, nil
+			}
 			switch key {
 			case "esc", "q":
 				m.detailModal = false
 				m.modalSource = ""
+				m.modalSearch = ""
+				m.modalSearching = false
+				m.modalSelected = 0
 				m.syncViewport()
 			case "ctrl+c":
 				return m, tea.Quit
+			case "/":
+				if m.modalSource != "" {
+					m.modalSearching = true
+					m.syncViewport()
+				}
 			case "o":
 				if m.modalSource != "" {
 					child, ok := m.currentModalSelectedChild()
 					if ok && !child.isAvailable {
 						m.detailModal = false
 						m.modalSource = ""
+						m.modalSearch = ""
+						m.modalSearching = false
 						return m.startSkillActionByID(child.skill, "open_skill")
 					}
 				} else {
@@ -335,6 +371,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if ok && !child.isAvailable {
 						m.detailModal = false
 						m.modalSource = ""
+						m.modalSearch = ""
+						m.modalSearching = false
 						return m.startSkillActionByID(child.skill, "reinstall_update")
 					}
 				}
@@ -344,6 +382,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if ok && !child.isAvailable {
 						m.detailModal = false
 						m.modalSource = ""
+						m.modalSearch = ""
+						m.modalSearching = false
 						return m.startSkillActionByID(child.skill, "remove")
 					}
 				}
@@ -365,6 +405,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								}
 								m.detailModal = false
 								m.modalSource = ""
+								m.modalSearch = ""
+								m.modalSearching = false
 								if a.RequiresConfirm {
 									armed := a
 									m.pendingAction = &armed
@@ -379,6 +421,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						} else {
 							m.detailModal = false
 							m.modalSource = ""
+							m.modalSearch = ""
+							m.modalSearching = false
 							return m.startSkillActionByID(child.skill, "open_skill")
 						}
 					}
@@ -392,13 +436,14 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "down", "j":
 				if m.modalSource != "" {
-					childRows := m.modalChildRows(m.modalSource)
+					childRows := m.filteredModalChildRows(m.modalSource)
 					if len(childRows) > 0 {
 						m.modalSelected++
 						if m.modalSelected >= len(childRows) {
 							m.modalSelected = len(childRows) - 1
 						}
 					}
+					m.clampSourceModalSelection()
 					m.ensureSourceModalSelectionVisible()
 					m.syncViewport()
 				} else {
@@ -407,13 +452,14 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "up", "k":
 				if m.modalSource != "" {
-					childRows := m.modalChildRows(m.modalSource)
+					childRows := m.filteredModalChildRows(m.modalSource)
 					if len(childRows) > 0 {
 						m.modalSelected--
 						if m.modalSelected < 0 {
 							m.modalSelected = 0
 						}
 					}
+					m.clampSourceModalSelection()
 					m.ensureSourceModalSelectionVisible()
 					m.syncViewport()
 				} else {
@@ -432,6 +478,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.modalSource != "" {
 					m.modalSelected = 0
 					m.viewport.GotoTop()
+					m.clampSourceModalSelection()
 					m.syncViewport()
 				} else {
 					m.viewport.GotoTop()
@@ -512,6 +559,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc", "c":
 				m.commands = false
 				m.modalSource = ""
+				m.modalSearch = ""
+				m.modalSearching = false
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "up", "k":
@@ -613,6 +662,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if row.isHeader {
 					m.detailModal = true
 					m.modalSource = row.groupName
+					m.modalSearch = ""
+					m.modalSearching = false
 					m.modalSelected = 0
 					m.detailsFocused = true
 					m.viewport.GotoTop()
@@ -632,6 +683,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.detailModal = true
 					m.modalSource = ""
+					m.modalSearch = ""
+					m.modalSearching = false
 					m.modalSelected = 0
 					m.detailsFocused = true
 					m.viewport.GotoTop()
@@ -882,6 +935,7 @@ func (m appModel) currentActions() []actions.CommandPreview {
 			}
 			return m.appendEnableDisableActions(actions.ForSkill(child.skill), child.skill)
 		}
+		return nil
 	}
 	selected := m.selectedSkills()
 	if len(selected) > 0 {
@@ -999,11 +1053,72 @@ func (m appModel) modalChildRows(groupName string) []modalChildRow {
 	return rows
 }
 
+func (m appModel) filteredModalChildRows(groupName string) []modalChildRow {
+	rows := m.modalChildRows(groupName)
+	query := strings.ToLower(strings.TrimSpace(compat.SanitizeMetadata(m.modalSearch)))
+	if query == "" {
+		return rows
+	}
+	filtered := make([]modalChildRow, 0, len(rows))
+	for _, row := range rows {
+		if modalChildRowMatches(row, query) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func modalChildRowMatches(row modalChildRow, query string) bool {
+	return strings.Contains(sourceModalChildSearchText(row), query)
+}
+
+func sourceModalChildSearchText(row modalChildRow) string {
+	parts := []string{}
+	if row.skill != nil {
+		parts = append(parts,
+			row.skill.Name,
+			row.skill.Description,
+			row.skill.CanonicalPath,
+			row.skill.SkillPath,
+		)
+		if info := sourceInfo(row.skill); info.Source != "" {
+			parts = append(parts, info.Source, info.Folder, info.Ref)
+		}
+	}
+	if row.discoveredSkill != nil {
+		parts = append(parts,
+			row.discoveredSkill.Name,
+			row.discoveredSkill.Description,
+			row.discoveredSkill.Source,
+			row.discoveredSkill.SkillPath,
+			row.discoveredSkill.Preview,
+		)
+	}
+	return strings.ToLower(compat.SanitizeMetadata(strings.Join(parts, " ")))
+}
+
+func (m *appModel) clampSourceModalSelection() {
+	if m.modalSource == "" {
+		return
+	}
+	childRows := m.filteredModalChildRows(m.modalSource)
+	if len(childRows) == 0 {
+		m.modalSelected = 0
+		return
+	}
+	if m.modalSelected < 0 {
+		m.modalSelected = 0
+	}
+	if m.modalSelected >= len(childRows) {
+		m.modalSelected = len(childRows) - 1
+	}
+}
+
 func (m appModel) currentModalSelectedChild() (modalChildRow, bool) {
 	if m.modalSource == "" {
 		return modalChildRow{}, false
 	}
-	childRows := m.modalChildRows(m.modalSource)
+	childRows := m.filteredModalChildRows(m.modalSource)
 	if len(childRows) == 0 || m.modalSelected < 0 || m.modalSelected >= len(childRows) {
 		return modalChildRow{}, false
 	}

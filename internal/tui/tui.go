@@ -91,6 +91,8 @@ type appModel struct {
 	skillSearchText         map[*model.Skill]string
 	modalSelected           int
 	modalSource             string
+	modalSearch             string
+	modalSearching          bool
 	pendingG                bool                    // saw a lone "g"; a second "g" jumps to top
 	pendingAction           *actions.CommandPreview // action awaiting confirm (decoupled from selection)
 	updatePlan              *selfupdate.UpdatePlan
