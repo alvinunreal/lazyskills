@@ -490,3 +490,69 @@ func TestTUIRegistryInvalidResultDisablesInstall(t *testing.T) {
 		t.Fatalf("invalid registry install should no-op in modal, confirming=%v modal=%v cmd=%v", m.confirming, m.registryModal, cmd)
 	}
 }
+
+func TestSourceModalSearchFiltersChildRows(t *testing.T) {
+	m := appModel{
+		width:       100,
+		height:      30,
+		detailModal: true,
+		modalSource: "owner/repo",
+		modalSelected: 5,
+		result: model.ScanResult{Skills: []*model.Skill{{
+			Name:      "Installed Alpha",
+			Scope:     model.ScopeProject,
+			LocalLock: &model.LocalLockEntry{Source: "owner/repo"},
+		}}},
+		discovery: map[string]SourceDiscovery{
+			"owner/repo": {
+				Status: DiscoveryReady,
+				Skills: []DiscoveredSkill{
+					{Name: "Alpha Available", Description: "first", Source: "owner/repo"},
+					{Name: "Beta Available", Description: "second", Source: "owner/repo"},
+					{Name: "Gamma Available", Description: "third", Source: "owner/repo"},
+				},
+			},
+		},
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(appModel)
+	if !m.modalSearching {
+		t.Fatal("expected / to enter source modal search mode")
+	}
+
+	for _, r := range []rune{'b', 'e'} {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(appModel)
+	}
+
+	if m.modalSearch != "be" {
+		t.Fatalf("expected search query to update, got %q", m.modalSearch)
+	}
+	rows := m.filteredModalChildRows("owner/repo")
+	if len(rows) != 1 || !rows[0].isAvailable || rows[0].discoveredSkill == nil || rows[0].discoveredSkill.Name != "Beta Available" {
+		t.Fatalf("expected filtered modal rows to keep only Beta Available, got %#v", rows)
+	}
+	if m.modalSelected != 0 {
+		t.Fatalf("expected modal selection to clamp to first filtered row, got %d", m.modalSelected)
+	}
+
+	help := m.detailModalHelpLine()
+	if !strings.Contains(help, "type to filter") {
+		t.Fatalf("expected modal help to mention search mode, got %q", help)
+	}
+
+	out := m.View()
+	if !strings.Contains(out, "Beta Available") || strings.Contains(out, "Alpha Available") || strings.Contains(out, "Gamma Available") {
+		t.Fatalf("expected filtered view to show only matching child rows, got %q", out)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(appModel)
+	if m.modalSearching {
+		t.Fatal("expected esc to exit modal search mode without closing the modal")
+	}
+	if !m.detailModal || m.modalSource != "owner/repo" {
+		t.Fatalf("expected source modal to remain open after leaving search mode, got detail=%v source=%q", m.detailModal, m.modalSource)
+	}
+}

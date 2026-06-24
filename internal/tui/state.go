@@ -64,7 +64,7 @@ func (m appModel) currentViewportSyncFingerprint() string {
 	if strings.HasPrefix(selectedKey, "group:") {
 		collapsed = m.isCollapsed(strings.TrimPrefix(selectedKey, "group:"))
 	}
-	return fmt.Sprintf("%d\x00%d\x00%d\x00%d\x00%s\x00%s\x00%t\x00%t\x00%t\x00%s\x00%d\x00%t\x00%s\x00%t",
+	return fmt.Sprintf("%d\x00%d\x00%d\x00%d\x00%s\x00%s\x00%t\x00%t\x00%t\x00%s\x00%s\x00%t\x00%d\x00%t\x00%s\x00%t",
 		m.width,
 		m.height,
 		m.selected,
@@ -75,6 +75,8 @@ func (m appModel) currentViewportSyncFingerprint() string {
 		m.commands,
 		m.helpOpen,
 		m.modalSource,
+		m.modalSearch,
+		m.modalSearching,
 		m.modalSelected,
 		m.previewPending,
 		selectedKey,
