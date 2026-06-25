@@ -44,6 +44,9 @@ func (m appModel) View() string {
 	if m.confirming {
 		return m.confirmationOverlay(layout)
 	}
+	if m.visibilityRepairModal {
+		return m.visibilityRepairModalOverlay(layout)
+	}
 	if m.commands {
 		return m.commandsOverlay(layout)
 	}
@@ -867,7 +870,6 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 	}
 
 	lines = append(lines, "")
-
 	childRows := m.modalChildRows(groupName)
 
 	lines = append(lines, sectionHeaderStyle.Render("Installed Skills:"))
@@ -1303,6 +1305,9 @@ func (m appModel) footerText(width int) string {
 				if hasAvailableToggleAction(footerActions) {
 					parts = append(parts, "e enable/disable")
 				}
+				if hasAvailableAction(footerActions, "repair_visibility_wizard") {
+					parts = append(parts, "v fix visibility")
+				}
 				parts = append(parts, "c actions")
 				if hasAvailableAction(footerActions, preferredUpdateActionID(m.selectedCount())) {
 					parts = append(parts, "u update")
@@ -1379,6 +1384,7 @@ func (m appModel) helpModalOverlay(layout appLayout) string {
 		"  s               Mark / unmark skills in the current source group",
 		"  o               Open selected skill directly in editor",
 		"  e               Enable / disable selected skill or source group",
+		"  v               Open visibility repair wizard for a selected skill",
 		"  c               Open command picker menu",
 		"  u / x           Quick reinstall-update / remove for selection",
 		"  U               Check/run LazySkills application update",
@@ -1452,6 +1458,9 @@ func (m appModel) detailModalHelpLine() string {
 				parts = append(parts, "enter install")
 			} else if !child.isAvailable && hasAvailableAction(modalActions, "open_skill") {
 				parts = append(parts, "enter open", "o open")
+				if hasAvailableAction(modalActions, "repair_visibility_wizard") {
+					parts = append(parts, "v repair visibility")
+				}
 			}
 		}
 		parts = append(parts, "c more")
@@ -1464,6 +1473,9 @@ func (m appModel) detailModalHelpLine() string {
 	if hasAvailableAction(m.currentDetailSkillActions(), "open_skill") {
 		parts = append(parts, "o open in editor")
 	}
+	if hasAvailableAction(m.currentDetailSkillActions(), "repair_visibility_wizard") {
+		parts = append(parts, "v repair visibility")
+	}
 	parts = append(parts, "c command picker", "↑/↓ scroll")
 	return strings.Join(parts, " · ")
 }
@@ -1473,7 +1485,7 @@ func (m appModel) currentDetailSkillActions() []actions.CommandPreview {
 	if len(rows) == 0 || m.selected < 0 || m.selected >= len(rows) || rows[m.selected].isHeader {
 		return nil
 	}
-	return actions.ForSkill(rows[m.selected].skill)
+	return m.appendVisibilityRepairActions(actions.ForSkill(rows[m.selected].skill), rows[m.selected].skill)
 }
 
 func (m *appModel) ensureSourceModalSelectionVisible() {

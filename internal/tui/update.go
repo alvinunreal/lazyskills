@@ -145,6 +145,62 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.confirming {
+			switch key {
+			case "esc":
+				m.confirming = false
+				m.confirmInput = ""
+				m.confirmError = ""
+				m.pendingAction = nil
+			case "pgdown", "ctrl+d", "pgup", "ctrl+u":
+				var cmd tea.Cmd
+				m.viewport, cmd = m.viewport.Update(msg)
+				return m, cmd
+			case "enter":
+				return m.confirmAction()
+			case "backspace", "ctrl+h":
+				if len(m.confirmInput) > 0 {
+					m.confirmInput = m.confirmInput[:len(m.confirmInput)-1]
+					m.confirmError = ""
+				}
+			default:
+				if len(key) == 1 {
+					m.confirmInput += key
+					m.confirmError = ""
+				}
+			}
+			m.syncViewport()
+			return m, nil
+		}
+		if m.visibilityRepairModal {
+			switch key {
+			case "esc", "q":
+				m = m.closeVisibilityRepair()
+				m.syncViewport()
+			case "ctrl+c":
+				return m, tea.Quit
+			case "up", "k":
+				m = m.moveVisibilityRepairSelection(-1)
+				m.syncViewport()
+			case "down", "j":
+				m = m.moveVisibilityRepairSelection(1)
+				m.syncViewport()
+			case "space":
+				m = m.toggleVisibilityRepairSelection()
+				m.syncViewport()
+			case "enter":
+				var cmd tea.Cmd
+				modelTmp, cmd := m.applyVisibilityRepairPreview()
+				m = modelTmp.(appModel)
+				if cmd != nil {
+					return m, cmd
+				}
+			case "home":
+				m.visibilityRepairSelected = 0
+				m.syncViewport()
+			}
+			return m, nil
+		}
 		if m.detailModal {
 			switch key {
 			case "esc", "q":
@@ -155,8 +211,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "o":
 				if m.modalSource != "" {
-					child, ok := m.currentModalSelectedChild()
-					if ok && !child.isAvailable {
+					if child, ok := m.currentModalSelectedChild(); ok && !child.isAvailable {
 						m.detailModal = false
 						m.modalSource = ""
 						return m.startSkillActionByID(child.skill, "open_skill")
@@ -167,8 +222,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "u":
 				if m.modalSource != "" {
-					child, ok := m.currentModalSelectedChild()
-					if ok && !child.isAvailable {
+					if child, ok := m.currentModalSelectedChild(); ok && !child.isAvailable {
 						m.detailModal = false
 						m.modalSource = ""
 						return m.startSkillActionByID(child.skill, "reinstall_update")
@@ -176,12 +230,22 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "x":
 				if m.modalSource != "" {
-					child, ok := m.currentModalSelectedChild()
-					if ok && !child.isAvailable {
+					if child, ok := m.currentModalSelectedChild(); ok && !child.isAvailable {
 						m.detailModal = false
 						m.modalSource = ""
 						return m.startSkillActionByID(child.skill, "remove")
 					}
+				}
+			case "v":
+				if m.modalSource != "" {
+					if child, ok := m.currentModalSelectedChild(); ok && !child.isAvailable {
+						m.detailModal = false
+						m.modalSource = ""
+						return m.startSkillActionByID(child.skill, "repair_visibility_wizard")
+					}
+				} else {
+					m.detailModal = false
+					return m.startCurrentSkillActionByID("repair_visibility_wizard")
 				}
 			case "c":
 				// Open the full action picker for the selected child.
@@ -374,6 +438,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					actionID = "remove"
 				}
 				return m.startActionByID(actionID)
+			case "v":
+				return m.startActionByID("repair_visibility_wizard")
 			}
 			m.syncViewport()
 			return m, nil
@@ -490,6 +556,11 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			rows := m.visibleRows()
 			if len(rows) > 0 && m.selected < len(rows) && !rows[m.selected].isHeader {
 				return m.startActionByID(preferredRemoveActionID(m.selectedCount()))
+			}
+		case "v":
+			rows := m.visibleRows()
+			if m.selectedCount() == 0 && len(rows) > 0 && m.selected < len(rows) && !rows[m.selected].isHeader {
+				return m.startActionByID("repair_visibility_wizard")
 			}
 		case "d":
 			if m.focus == focusSkills {
@@ -713,8 +784,9 @@ func (m appModel) currentActions() []actions.CommandPreview {
 			if child.isAvailable {
 				return actions.ForAvailableSkill(m.modalSource, child.discoveredSkill.Name)
 			}
-			return m.appendEnableDisableActions(actions.ForSkill(child.skill), child.skill)
+			return m.appendVisibilityRepairActions(m.appendEnableDisableActions(actions.ForSkill(child.skill), child.skill), child.skill)
 		}
+		return nil
 	}
 	selected := m.selectedSkills()
 	if len(selected) > 0 {
@@ -728,7 +800,7 @@ func (m appModel) currentActions() []actions.CommandPreview {
 	if row.isHeader {
 		return m.sourceActions(row.groupName)
 	}
-	return m.appendEnableDisableActions(actions.ForSkill(row.skill), row.skill)
+	return m.appendVisibilityRepairActions(m.appendEnableDisableActions(actions.ForSkill(row.skill), row.skill), row.skill)
 }
 
 func (m appModel) startAction() (tea.Model, tea.Cmd) {
@@ -777,12 +849,15 @@ func (m appModel) startToggleAction() (tea.Model, tea.Cmd) {
 }
 
 func (m appModel) startSkillActionByID(sk *model.Skill, id string) (tea.Model, tea.Cmd) {
-	for _, action := range actions.ForSkill(sk) {
+	for _, action := range m.appendVisibilityRepairActions(actions.ForSkill(sk), sk) {
 		if action.ID == id {
 			if !action.Available {
 				return m, nil
 			}
 			m.commands = false
+			if action.Exec.Internal == "open_visibility_repair" {
+				return m.beginVisibilityRepair(sk)
+			}
 			return m.executeAction(action)
 		}
 	}
@@ -1027,6 +1102,38 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 			return m, nil
 		}
 		// Success: rescan drops the now-pruned phantom from the list.
+		m.actionResult = nil
+		return m, loadSnapshot(m.cwd)
+	}
+	if action.Exec.Internal == "open_visibility_repair" {
+		m.commands = false
+		m.confirming = false
+		m.confirmInput = ""
+		m.confirmError = ""
+		m.actionResult = nil
+		if skill, ok := m.currentActionSkill(); ok {
+			return m.beginVisibilityRepair(skill)
+		}
+		return m, nil
+	}
+	if action.Exec.Internal == "repair_visibility" {
+		m.commands = false
+		m.confirming = false
+		m.confirmInput = ""
+		m.confirmError = ""
+		m.visibilityRepairModal = false
+		m.visibilityRepairSkillKey = ""
+		m.visibilityRepairTargets = nil
+		m.visibilityRepairSelected = 0
+		result, partialSuccess := m.repairVisibilityExecutionPreview(action)
+		if result.ExitCode != 0 || result.Err != "" {
+			m.actionResult = &result
+			m.syncViewport()
+			if partialSuccess {
+				return m, loadSnapshot(m.cwd)
+			}
+			return m, nil
+		}
 		m.actionResult = nil
 		return m, loadSnapshot(m.cwd)
 	}
