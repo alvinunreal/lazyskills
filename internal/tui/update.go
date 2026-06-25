@@ -718,17 +718,27 @@ func (m appModel) currentActions() []actions.CommandPreview {
 	}
 	selected := m.selectedSkills()
 	if len(selected) > 0 {
-		return actions.ForSkills(selected)
+		previews := actions.ForSkills(selected)
+		if m.commands {
+			return append(previews, m.appLevelActions()...)
+		}
+		return previews
 	}
 	rows := m.visibleRows()
 	if len(rows) == 0 || m.selected < 0 || m.selected >= len(rows) {
-		return actions.AppLevelActions()
+		return m.appLevelActions()
 	}
 	row := rows[m.selected]
+	var previews []actions.CommandPreview
 	if row.isHeader {
-		return m.sourceActions(row.groupName)
+		previews = m.sourceActions(row.groupName)
+	} else {
+		previews = m.appendEnableDisableActions(actions.ForSkill(row.skill), row.skill)
 	}
-	return m.appendEnableDisableActions(actions.ForSkill(row.skill), row.skill)
+	if m.commands {
+		return append(previews, m.appLevelActions()...)
+	}
+	return previews
 }
 
 func (m appModel) startAction() (tea.Model, tea.Cmd) {
@@ -908,6 +918,72 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 		m.commands = false
 		m.actionResult = nil
 		return m.startDiscovery(action.ConfirmValue, true)
+	}
+	if action.Exec.Internal == "bundle_export" {
+		m.commands = false
+		m.confirming = false
+		m.confirmInput = ""
+		m.confirmError = ""
+		bundlePath := actions.DefaultProjectBundlePath(m.cwd)
+		if len(action.Exec.Args) > 0 && action.Exec.Args[0] != "" {
+			bundlePath = action.Exec.Args[0]
+		}
+		bundle, summary := actions.BuildProjectSkillBundle(m.cwd, m.result.Skills)
+		if err := actions.WriteProjectSkillBundle(bundlePath, bundle); err != nil {
+			m.actionResult = &runner.Result{Program: "bundle-export", Args: []string{bundlePath}, Cwd: m.cwd, ExitCode: -1, Err: compat.SanitizeMetadata(err.Error())}
+			m.syncViewport()
+			return m, nil
+		}
+		stdout := fmt.Sprintf("Exported %d project skills to %s.", summary.Included, summary.Path)
+		if summary.Skipped > 0 {
+			stdout = stdout + "\nSkipped " + fmt.Sprintf("%d untracked project skills.", summary.Skipped)
+		}
+		m.actionResult = &runner.Result{Program: "bundle-export", Args: []string{bundlePath}, Cwd: m.cwd, ExitCode: 0, Stdout: stdout}
+		m.syncViewport()
+		return m, nil
+	}
+	if action.Exec.Internal == "bundle_import" {
+		m.commands = false
+		m.confirming = false
+		m.confirmInput = ""
+		m.confirmError = ""
+		bundlePath := actions.DefaultProjectBundlePath(m.cwd)
+		if len(action.Exec.Args) > 0 && action.Exec.Args[0] != "" {
+			bundlePath = action.Exec.Args[0]
+		}
+		plan, err := actions.BuildProjectBundleImportPlan(bundlePath, m.result.Skills)
+		if err != nil {
+			m.actionResult = &runner.Result{Program: "bundle-import", Args: []string{bundlePath}, Cwd: m.cwd, ExitCode: -1, Err: compat.SanitizeMetadata(err.Error())}
+			m.syncViewport()
+			return m, nil
+		}
+		if len(plan.Installs) == 0 {
+			m.actionResult = &runner.Result{Program: "bundle-import", Args: []string{bundlePath}, Cwd: m.cwd, ExitCode: 0, Stdout: plan.Summary}
+			m.syncViewport()
+			return m, nil
+		}
+		batch := make([]actions.ExecSpec, 0, len(plan.Installs))
+		for _, preview := range plan.Installs {
+			batch = append(batch, preview.Exec)
+		}
+		m.running = true
+		m.runningTitle = action.Title
+		m.actionResult = nil
+		m.syncViewport()
+		return m, func() tea.Msg {
+			result, partialSuccess := m.runBatch(batch)
+			result.Program = "bundle-import"
+			result.Args = []string{bundlePath}
+			result.Cwd = m.cwd
+			if plan.Summary != "" {
+				if result.Stdout != "" {
+					result.Stdout = plan.Summary + "\n\n" + result.Stdout
+				} else {
+					result.Stdout = plan.Summary
+				}
+			}
+			return actionResultMsg{result: result, mutates: true, partialSuccess: partialSuccess}
+		}
 	}
 	if action.Exec.Internal == "enable_skill" || action.Exec.Internal == "disable_skill" {
 		m.commands = false

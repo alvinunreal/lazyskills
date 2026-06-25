@@ -35,6 +35,7 @@ LazySkills is a blazing-fast terminal UI for managing agent skills. It gives you
 - **Check agent visibility** - switch agents and see which skills are actually usable by Claude Code, OpenCode, Codex, Cursor, Gemini CLI, and many more.
 - **Spot broken installs fast** - highlights missing `SKILL.md`, invalid frontmatter, broken symlinks, missing lock entries, and ghost agent skills.
 - **Preview before you act** - inspect metadata, rendered skill content, and the exact command LazySkills is about to run.
+- **Bundle project skills safely** - export a reproducible project bundle and preview import plans before confirming any install changes.
 - **Safe skill actions** - open, reinstall/update, remove, prune orphaned locks, or run bulk updates/removals with confirmation prompts.
 - **Discover more from a source** - scan local checkouts or GitHub skill sources to find skills you have not installed yet.
 
@@ -95,6 +96,8 @@ Useful keys:
 | `?` | Show the full keymap |
 
 LazySkills previews actions before running them, and destructive actions require confirmation.
+
+Use the action picker (`c`) on the main screen to export a project skill bundle to `.lazyskills/skills.bundle.json` or import one with a dry-run preview before confirming.
 
 ## 🔄 Updates
 

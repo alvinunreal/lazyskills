@@ -411,6 +411,14 @@ func (m appModel) sourceActions(group string) []actions.CommandPreview {
 	return previews
 }
 
+func (m appModel) bundleActions() []actions.CommandPreview {
+	return actions.ProjectBundleActions(m.cwd, m.result.Skills)
+}
+
+func (m appModel) appLevelActions() []actions.CommandPreview {
+	return append(actions.AppLevelActions(), m.bundleActions()...)
+}
+
 func skillKey(skill *model.Skill) string {
 	if skill == nil {
 		return ""
