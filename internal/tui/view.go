@@ -668,7 +668,7 @@ func (m appModel) previewLinesForRows(rows []skillsRow, width int) []string {
 	if view.Preview == "" {
 		return []string{dimStyle.Render("No preview available for this skill.")}
 	}
-	if m.previewPending && !m.hasRenderedMarkdownPreview(view.Preview, width) {
+	if m.previewPending && !m.previewRendering && !m.hasRenderedMarkdownPreview(view.Preview, width) {
 		return []string{dimStyle.Render("Preview updates when navigation pauses.")}
 	}
 	if !m.hasRenderedMarkdownPreview(view.Preview, width) && m.previewRendering {

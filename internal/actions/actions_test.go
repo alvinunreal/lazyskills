@@ -325,6 +325,11 @@ func TestMissingDepsDisablesActions(t *testing.T) {
 
 func TestForAvailableSkill(t *testing.T) {
 	ResetActionCaches()
+	originalLookPath := LookPath
+	defer func() {
+		LookPath = originalLookPath
+		ResetActionCaches()
+	}()
 	LookPath = func(name string) (string, error) {
 		return "/usr/bin/" + name, nil
 	}
