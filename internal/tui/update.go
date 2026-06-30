@@ -689,6 +689,10 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if postKeyCmd != nil {
 			return m, postKeyCmd
 		}
+		if cmd := m.dispatchPreviewRender(); cmd != nil {
+			m.markPreviewRendering()
+			return m, cmd
+		}
 	}
 	return m, nil
 }

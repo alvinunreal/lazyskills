@@ -3099,6 +3099,10 @@ func TestPreviewRendererCacheConcurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	const numGoroutines = 20
 	renderers := make([]*glamour.TermRenderer, numGoroutines)
+	warmed := previewRenderer(50)
+	if warmed == nil {
+		t.Fatal("expected warm-up renderer")
+	}
 
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
