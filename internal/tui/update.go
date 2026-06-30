@@ -1067,6 +1067,9 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 				Err:      fmt.Sprintf("removed %d broken symlink(s), %d failed: %s", removed, failed, compat.SanitizeMetadata(firstErr)),
 			}
 			m.syncViewport()
+			if removed > 0 {
+				return m, loadSnapshot(m.cwd)
+			}
 			return m, nil
 		}
 		m.actionResult = nil

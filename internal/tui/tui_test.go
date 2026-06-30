@@ -584,6 +584,51 @@ func TestBulkPartialFailureRescansAndKeepsSelection(t *testing.T) {
 	}
 }
 
+func TestDeleteBrokenSymlinkPartialFailureRescans(t *testing.T) {
+	cwd := t.TempDir()
+	goodLink := filepath.Join(cwd, "good-broken")
+	if err := os.Symlink(filepath.Join(cwd, "missing-good"), goodLink); err != nil {
+		t.Fatal(err)
+	}
+	lockedDir := filepath.Join(cwd, "locked")
+	if err := os.Mkdir(lockedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	badLink := filepath.Join(lockedDir, "bad-broken")
+	if err := os.Symlink(filepath.Join(cwd, "missing-bad"), badLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(lockedDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(lockedDir, 0o755) })
+
+	m := appModel{cwd: cwd, width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{{
+		Name:  "Broken",
+		Scope: model.ScopeProject,
+		ObservedPaths: []model.ObservedPath{
+			{Path: goodLink, Status: model.StatusBrokenSymlink},
+			{Path: badLink, Status: model.StatusBrokenSymlink},
+		},
+	}}}}
+	action := actions.CommandPreview{ID: "delete_broken_symlink", ConfirmValue: "Broken", Exec: actions.ExecSpec{Internal: "delete_broken_symlink"}}
+
+	updated, cmd := m.executeAction(action)
+	next := updated.(appModel)
+	if cmd == nil {
+		t.Fatal("expected partial delete success to trigger a rescan")
+	}
+	if next.actionResult == nil || next.actionResult.ExitCode != -1 || !strings.Contains(next.actionResult.Err, "removed 1 broken symlink") {
+		t.Fatalf("expected partial failure action result, got %#v", next.actionResult)
+	}
+	if _, err := os.Lstat(goodLink); !os.IsNotExist(err) {
+		t.Fatalf("expected removable broken symlink to be deleted, lstat err=%v", err)
+	}
+	if _, err := os.Lstat(badLink); err != nil {
+		t.Fatalf("expected failed broken symlink to remain, lstat err=%v", err)
+	}
+}
+
 func TestDirectUpdateHotkeyStartsCurrentOrBulkAction(t *testing.T) {
 	m := actionTestModel(t.TempDir())
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
