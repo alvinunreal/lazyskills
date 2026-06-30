@@ -43,6 +43,52 @@ func TestForSkillPruneLockAction(t *testing.T) {
 	}
 }
 
+func TestDeleteBrokenSymlinkAction(t *testing.T) {
+	// Skill with a broken symlink should include delete_broken_symlink.
+	withBroken := &model.Skill{
+		Name:  "broken-skill",
+		Scope: model.ScopeProject,
+		ObservedPaths: []model.ObservedPath{
+			{Path: "/tmp/link-to-nowhere", Status: model.StatusBrokenSymlink, TargetPath: "/tmp/gone"},
+			{Path: "/tmp/working-link", Status: model.StatusSymlink, TargetPath: "/tmp/real"},
+		},
+	}
+	previews := ForSkill(withBroken)
+	var deleteAct *CommandPreview
+	for i := range previews {
+		if previews[i].ID == "delete_broken_symlink" {
+			deleteAct = &previews[i]
+		}
+	}
+	if deleteAct == nil {
+		t.Fatal("expected a delete_broken_symlink action for skill with broken symlink")
+	}
+	if !deleteAct.Available || !deleteAct.Dangerous || !deleteAct.RequiresConfirm {
+		t.Fatalf("expected dangerous+confirm action: %+v", *deleteAct)
+	}
+	if deleteAct.ConfirmValue != "broken-skill" || deleteAct.Exec.Internal != "delete_broken_symlink" {
+		t.Fatalf("unexpected delete preview: %+v", *deleteAct)
+	}
+	if !strings.Contains(deleteAct.Title, "broken symlink") {
+		t.Fatalf("expected title to mention broken symlinks, got %q", deleteAct.Title)
+	}
+
+	// Skill WITHOUT any broken symlink should NOT include delete_broken_symlink.
+	healthy := &model.Skill{
+		Name:  "ok",
+		Scope: model.ScopeProject,
+		ObservedPaths: []model.ObservedPath{
+			{Path: "/tmp/working-link", Status: model.StatusSymlink, TargetPath: "/tmp/real"},
+		},
+		CanonicalPath: "/tmp/ok",
+	}
+	for _, a := range ForSkill(healthy) {
+		if a.ID == "delete_broken_symlink" {
+			t.Fatal("did not expect delete_broken_symlink action for a healthy skill")
+		}
+	}
+}
+
 func TestForSkillBuildsStructuredSanitizedCommandPreviews(t *testing.T) {
 	t.Setenv("EDITOR", "")
 	sk := &model.Skill{

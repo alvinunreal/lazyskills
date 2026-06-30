@@ -207,6 +207,9 @@ func ForSkillWithResolver(sk *model.Skill, resolve SkillsResolver) []CommandPrev
 	if hasOrphanedLock(sk) {
 		previews = append(previews, pruneLockPreview(sk))
 	}
+	if hasBrokenSymlink(sk) {
+		previews = append(previews, deleteBrokenSymlinkPreview(sk))
+	}
 	return previews
 }
 
@@ -237,6 +240,44 @@ func pruneLockPreview(sk *model.Skill) CommandPreview {
 		Exec:            ExecSpec{Internal: internal},
 		Mutates:         true,
 		RequiresConfirm: true,
+		ConfirmValue:    sk.Name,
+		Available:       true,
+	}
+}
+
+// brokenSymlinkPaths returns the on-disk paths of this skill's broken
+// (dangling) symlinks.
+func brokenSymlinkPaths(sk *model.Skill) []string {
+	if sk == nil {
+		return nil
+	}
+	var paths []string
+	for _, op := range sk.ObservedPaths {
+		if op.Status == model.StatusBrokenSymlink {
+			paths = append(paths, op.Path)
+		}
+	}
+	return paths
+}
+
+func hasBrokenSymlink(sk *model.Skill) bool {
+	return len(brokenSymlinkPaths(sk)) > 0
+}
+
+// deleteBrokenSymlinkPreview builds the internal action that deletes the
+// broken/dangling symlink files for a skill. The TUI owns the filesystem
+// mutation and triggers a rescan afterwards. ONLY broken symlinks are ever
+// deleted — never working symlinks or canonical skill files.
+func deleteBrokenSymlinkPreview(sk *model.Skill) CommandPreview {
+	return CommandPreview{
+		ID:              "delete_broken_symlink",
+		Title:           "Delete broken symlink(s)",
+		Description:     "Delete the broken/dangling symlink file(s) for this skill.",
+		Command:         "delete broken symlinks for " + compat.SanitizeMetadata(sk.Name),
+		Exec:            ExecSpec{Internal: "delete_broken_symlink"},
+		Mutates:         true,
+		RequiresConfirm: true,
+		Dangerous:       true,
 		ConfirmValue:    sk.Name,
 		Available:       true,
 	}

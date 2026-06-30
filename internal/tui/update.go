@@ -1030,6 +1030,48 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 		m.actionResult = nil
 		return m, loadSnapshot(m.cwd)
 	}
+	if action.Exec.Internal == "delete_broken_symlink" {
+		m.commands = false
+		m.confirming = false
+		m.confirmInput = ""
+		m.confirmError = ""
+		removed, failed := 0, 0
+		firstErr := ""
+		for _, sk := range m.result.Skills {
+			if sk.Name != action.ConfirmValue {
+				continue
+			}
+			for _, op := range sk.ObservedPaths {
+				if op.Status != model.StatusBrokenSymlink {
+					continue // safety: never touch working symlinks or canonical files
+				}
+				if err := os.Remove(op.Path); err != nil {
+					if os.IsNotExist(err) {
+						continue
+					}
+					failed++
+					if firstErr == "" {
+						firstErr = err.Error()
+					}
+					continue
+				}
+				removed++
+			}
+			break
+		}
+		if failed > 0 {
+			m.actionResult = &runner.Result{
+				Program:  "delete-broken-symlink",
+				Args:     []string{action.ConfirmValue},
+				ExitCode: -1,
+				Err:      fmt.Sprintf("removed %d broken symlink(s), %d failed: %s", removed, failed, compat.SanitizeMetadata(firstErr)),
+			}
+			m.syncViewport()
+			return m, nil
+		}
+		m.actionResult = nil
+		return m, loadSnapshot(m.cwd)
+	}
 	if action.Exec.Internal == "refresh" {
 		m.actionResult = nil
 		return m, loadSnapshot(m.cwd)
