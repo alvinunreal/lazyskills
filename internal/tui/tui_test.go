@@ -592,6 +592,8 @@ func TestDeleteBrokenSymlinkPartialFailureRescans(t *testing.T) {
 	if err := os.Symlink(filepath.Join(cwd, "missing-good"), goodLink); err != nil {
 		t.Fatal(err)
 	}
+	// Use a non-empty directory, not permissions, as the failing remove target so
+	// the failure is deterministic even when tests run as root.
 	badPath := filepath.Join(cwd, "not-a-symlink-dir")
 	if err := os.Mkdir(badPath, 0o755); err != nil {
 		t.Fatal(err)
@@ -623,6 +625,36 @@ func TestDeleteBrokenSymlinkPartialFailureRescans(t *testing.T) {
 	}
 	if info, err := os.Lstat(badPath); err != nil || !info.IsDir() {
 		t.Fatalf("expected failed path to remain as directory, info=%v err=%v", info, err)
+	}
+}
+
+func TestDeleteBrokenSymlinkTargetsMatchingScope(t *testing.T) {
+	cwd := t.TempDir()
+	projectLink := filepath.Join(cwd, "project-broken")
+	globalLink := filepath.Join(cwd, "global-broken")
+	if err := os.Symlink(filepath.Join(cwd, "missing-project"), projectLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(cwd, "missing-global"), globalLink); err != nil {
+		t.Fatal(err)
+	}
+
+	m := appModel{cwd: cwd, width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{
+		{Name: "Duplicate", Scope: model.ScopeGlobal, ObservedPaths: []model.ObservedPath{{Path: globalLink, Status: model.StatusBrokenSymlink}}},
+		{Name: "Duplicate", Scope: model.ScopeProject, ObservedPaths: []model.ObservedPath{{Path: projectLink, Status: model.StatusBrokenSymlink}}},
+	}}}
+	action := actions.CommandPreview{ID: "delete_broken_symlink", ConfirmValue: "Duplicate", Exec: actions.ExecSpec{Internal: "delete_broken_symlink", Args: []string{string(model.ScopeProject), "Duplicate"}}}
+
+	updated, cmd := m.executeAction(action)
+	next := updated.(appModel)
+	if cmd == nil || next.actionResult != nil {
+		t.Fatalf("expected scoped delete success with rescan, result=%#v cmd=%v", next.actionResult, cmd)
+	}
+	if _, err := os.Lstat(projectLink); !os.IsNotExist(err) {
+		t.Fatalf("expected project broken symlink to be deleted, lstat err=%v", err)
+	}
+	if _, err := os.Lstat(globalLink); err != nil {
+		t.Fatalf("expected global broken symlink to remain, lstat err=%v", err)
 	}
 }
 
