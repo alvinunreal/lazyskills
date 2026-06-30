@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/alvinunreal/lazyskills/internal/actions"
+	"github.com/alvinunreal/lazyskills/internal/display"
 	"github.com/alvinunreal/lazyskills/internal/model"
 	"github.com/alvinunreal/lazyskills/internal/runner"
 	"github.com/alvinunreal/lazyskills/internal/scan"
@@ -85,9 +86,12 @@ type appModel struct {
 	discovery               map[string]SourceDiscovery
 	previewCache            map[previewCacheKey][]string
 	previewPending          bool
+	previewRendering        bool
 	previewGeneration       int
 	viewportSyncFingerprint string
 	skillSearchText         map[*model.Skill]string
+	skillViews              map[*model.Skill]*display.SkillView
+	cachedActions           []actions.CommandPreview
 	modalSelected           int
 	modalSource             string
 	pendingG                bool                    // saw a lone "g"; a second "g" jumps to top

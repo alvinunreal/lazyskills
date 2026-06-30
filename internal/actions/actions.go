@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/alvinunreal/lazyskills/internal/compat"
 	"github.com/alvinunreal/lazyskills/internal/model"
@@ -275,21 +276,62 @@ func openEditorAction(sk *model.Skill) (CommandPreview, bool, string) {
 
 var LookPath = exec.LookPath
 
+// memoised results for HasSkillsOrNpx and ResolveSkillsCommand.
+// These depend only on PATH, which never changes during a session.
+var (
+	hasSkillsMu   sync.Mutex
+	hasSkillsOK   bool
+	hasSkillsAvail bool
+	hasSkillsReason string
+
+	resolveMu     sync.Mutex
+	resolveOK     bool
+	resolveProg   string
+	resolveArgs   []string
+)
+
+// ResetActionCaches clears the process-lifetime caches for HasSkillsOrNpx
+// and ResolveSkillsCommand. Tests that replace LookPath must call this
+// before and after the swap so the memo picks up the new value.
+func ResetActionCaches() {
+	hasSkillsMu.Lock()
+	hasSkillsOK = false
+	hasSkillsMu.Unlock()
+	resolveMu.Lock()
+	resolveOK = false
+	resolveMu.Unlock()
+}
+
 func HasSkillsOrNpx() (bool, string) {
-	if _, err := LookPath("skills"); err == nil {
-		return true, ""
+	hasSkillsMu.Lock()
+	if !hasSkillsOK {
+		ok, reason := true, ""
+		if _, err := LookPath("skills"); err == nil {
+			// ok
+		} else if _, err := LookPath("npx"); err == nil {
+			// ok
+		} else {
+			ok, reason = false, "neither 'skills' nor 'npx' is available in your PATH"
+		}
+		hasSkillsAvail, hasSkillsReason, hasSkillsOK = ok, reason, true
 	}
-	if _, err := LookPath("npx"); err == nil {
-		return true, ""
-	}
-	return false, "neither 'skills' nor 'npx' is available in your PATH"
+	avail, reason := hasSkillsAvail, hasSkillsReason
+	hasSkillsMu.Unlock()
+	return avail, reason
 }
 
 func ResolveSkillsCommand() (string, []string) {
-	if _, err := LookPath("skills"); err == nil {
-		return "skills", nil
+	resolveMu.Lock()
+	if !resolveOK {
+		prog, args := "npx", []string{"--yes", "skills"}
+		if _, err := LookPath("skills"); err == nil {
+			prog, args = "skills", nil
+		}
+		resolveProg, resolveArgs, resolveOK = prog, args, true
 	}
-	return "npx", []string{"--yes", "skills"}
+	prog, args := resolveProg, resolveArgs
+	resolveMu.Unlock()
+	return prog, args
 }
 
 func newPreview(id, title, program string, args []string, description string, mutates, confirm, dangerous bool, confirmValue string) CommandPreview {

@@ -17,7 +17,7 @@ func TestTUIFooterUpdateNotice(t *testing.T) {
 	m.height = 30
 
 	// 1. Without update plan, no notice
-	footer := m.footerText(100)
+	footer := m.footerText(100, m.visibleRows(), m.currentActions())
 	if strings.Contains(footer, "U update") {
 		t.Errorf("unexpected update notice in footer when no update is available: %q", footer)
 	}
@@ -30,13 +30,13 @@ func TestTUIFooterUpdateNotice(t *testing.T) {
 		Channel: "manual",
 	}
 
-	footer = m.footerText(120)
+	footer = m.footerText(120, m.visibleRows(), m.currentActions())
 	if !strings.Contains(footer, "U update") || !strings.Contains(footer, "v1.1.0 available") {
 		t.Errorf("expected update notice in footer, got: %q", footer)
 	}
 
 	// 3. Notice omitted if width is too narrow
-	footerNarrow := m.footerText(40)
+	footerNarrow := m.footerText(40, m.visibleRows(), m.currentActions())
 	if strings.Contains(footerNarrow, "U update") {
 		t.Errorf("expected update notice to be omitted in narrow viewport, got: %q", footerNarrow)
 	}

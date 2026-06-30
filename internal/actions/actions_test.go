@@ -288,12 +288,17 @@ func TestAppLevelActions(t *testing.T) {
 
 func TestMissingDepsDisablesActions(t *testing.T) {
 	oldLookPath := LookPath
-	defer func() { LookPath = oldLookPath }()
+	defer func() {
+		LookPath = oldLookPath
+		ResetActionCaches()
+	}()
 
+	ResetActionCaches()
 	// Simulate missing dependencies
 	LookPath = func(name string) (string, error) {
 		return "", os.ErrNotExist
 	}
+	ResetActionCaches()
 
 	sk := &model.Skill{
 		Name:          "Deploy Skill",
@@ -319,9 +324,11 @@ func TestMissingDepsDisablesActions(t *testing.T) {
 }
 
 func TestForAvailableSkill(t *testing.T) {
+	ResetActionCaches()
 	LookPath = func(name string) (string, error) {
 		return "/usr/bin/" + name, nil
 	}
+	ResetActionCaches()
 	previews := ForAvailableSkill("owner/repo", "test-skill")
 	if len(previews) != 1 {
 		t.Fatalf("expected 1 install preview, got %d", len(previews))

@@ -267,7 +267,7 @@ func TestAgentFilterListMarksNonVisibleSkills(t *testing.T) {
 			Visibility:    []model.SkillVisibility{{Agent: "claude-code", Display: "Claude Code", Visible: false, Reason: "missing_agent_link"}},
 		},
 	}}}
-	out := compat.StripTerminalEscapes(m.listPane(20, 80))
+	out := compat.StripTerminalEscapes(m.listPane(20, 80, m.visibleRows()))
 	if !strings.Contains(out, "Visible [P] ✓") || !strings.Contains(out, "Missing [P] ×") {
 		t.Fatalf("expected list-level visibility badges, got %q", out)
 	}
@@ -282,7 +282,7 @@ func TestListRendersIssueRowsWithSeverityBadges(t *testing.T) {
 		{Name: "Warning", Scope: model.ScopeProject, HealthIssues: []model.HealthIssue{{Type: "missing_global_lock", Severity: "warning", Message: "not tracked"}}},
 		{Name: "Error", Scope: model.ScopeProject, HealthIssues: []model.HealthIssue{{Type: "missing_file", Severity: "error", Message: "missing SKILL.md"}}},
 	}}}
-	out := m.listPane(20, 80)
+	out := m.listPane(20, 80, m.visibleRows())
 	if !strings.Contains(out, "Warning [P] ▲1") {
 		t.Fatalf("expected warning issue badge, got %q", out)
 	}
@@ -1301,6 +1301,11 @@ func TestMetadataShowsSkillDescription(t *testing.T) {
 func TestDetailScrollKeysMoveViewport(t *testing.T) {
 	preview := strings.Repeat("- line\n", 80)
 	m := appModel{width: 100, height: 20, selected: 1, result: model.ScanResult{Skills: []*model.Skill{{Name: "Long", Description: "desc", Scope: model.ScopeProject, Preview: preview}}}}
+	_, rightWidth, _, _ := m.getThreePaneLayout()
+	previewWidth := max(1, rightWidth-4)
+	m.previewCache = map[previewCacheKey][]string{
+		{markdown: preview, width: previewWidth}: renderMarkdownPreview(preview, previewWidth),
+	}
 	m.syncViewport()
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	next := updated.(appModel)
@@ -1604,7 +1609,11 @@ func TestContextualFooterAndHelpModal(t *testing.T) {
 		}
 		return "", errors.New("not found")
 	}
-	t.Cleanup(func() { actions.LookPath = oldLookPath })
+	actions.ResetActionCaches()
+	t.Cleanup(func() {
+		actions.LookPath = oldLookPath
+		actions.ResetActionCaches()
+	})
 
 	m := appModel{
 		width:    100,
@@ -1685,7 +1694,11 @@ func TestFooterHidesUnavailableSkillHotkeys(t *testing.T) {
 		}
 		return "", errors.New("not found")
 	}
-	t.Cleanup(func() { actions.LookPath = oldLookPath })
+	actions.ResetActionCaches()
+	t.Cleanup(func() {
+		actions.LookPath = oldLookPath
+		actions.ResetActionCaches()
+	})
 
 	m := appModel{
 		width:    100,
@@ -1699,7 +1712,7 @@ func TestFooterHidesUnavailableSkillHotkeys(t *testing.T) {
 	}
 	m.syncViewport()
 
-	footer := m.footerText(100)
+	footer := m.footerText(100, m.visibleRows(), m.currentActions())
 	if strings.Contains(footer, "u update") {
 		t.Fatalf("untracked skill footer should hide unavailable update hotkey, got %q", footer)
 	}
@@ -1727,7 +1740,7 @@ func TestSourceScanHintIgnoresBulkSelection(t *testing.T) {
 	m.selectedKeys = map[string]bool{skillKey(m.result.Skills[0]): true}
 	m.syncViewport()
 
-	footer := m.footerText(120)
+	footer := m.footerText(120, m.visibleRows(), m.currentActions())
 	if !strings.Contains(footer, "d scan") {
 		t.Fatalf("source header should show scan even with bulk selection active, got %q", footer)
 	}
@@ -1784,7 +1797,11 @@ func TestSourceModalHelpIsCapabilityAware(t *testing.T) {
 		}
 		return "", errors.New("not found")
 	}
-	t.Cleanup(func() { actions.LookPath = oldLookPath })
+	actions.ResetActionCaches()
+	t.Cleanup(func() {
+		actions.LookPath = oldLookPath
+		actions.ResetActionCaches()
+	})
 	t.Setenv("EDITOR", "")
 
 	m := appModel{

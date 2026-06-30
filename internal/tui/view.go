@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/glamour/v2"
@@ -52,6 +53,12 @@ func (m appModel) View() string {
 	viewModel.width = layout.Width
 	viewModel.height = layout.Height
 
+	// Compute visibleRows once and thread it through all View consumers.
+	// Every consumer that previously called m.visibleRows() independently
+	// re-derived the filtered-skills walk (listGroupLabel → sourceInfo →
+	// SanitizeMetadata per skill), adding ~100ms per frame.
+	rows := viewModel.visibleRows()
+
 	listWidth, rightWidth, topHeight, bottomHeight := viewModel.getThreePaneLayout()
 	needsSync := viewModel.needsViewportSync(rightWidth, topHeight, bottomHeight)
 	perfLogf("view_pre selected=%d needs_sync=%t metadata_size=%dx%d preview_size=%dx%d", viewModel.selected, needsSync, viewModel.metadataViewport.Width, viewModel.metadataViewport.Height, viewModel.previewViewport.Width, viewModel.previewViewport.Height)
@@ -71,7 +78,7 @@ func (m appModel) View() string {
 	metadataStyle := paneStyle(metadataLayout, viewModel.focus == focusMetadata)
 	previewStyle := paneStyle(previewLayout, viewModel.focus == focusPreview)
 
-	listContent := fitLines(viewModel.listPane(listLayout.ContentHeight, listLayout.ContentWidth), listLayout.ContentHeight)
+	listContent := fitLines(viewModel.listPane(listLayout.ContentHeight, listLayout.ContentWidth, rows), listLayout.ContentHeight)
 	list := decoratePane(listStyle.Render(listContent), listLayout, viewModel.focus == focusSkills, viewModel.listTitle())
 
 	metadataContent := fitLines(viewModel.metadataViewport.View(), metadataLayout.ContentHeight)
@@ -83,7 +90,11 @@ func (m appModel) View() string {
 	rightSide := lipgloss.JoinVertical(lipgloss.Left, metadata, preview)
 	view := lipgloss.JoinHorizontal(lipgloss.Top, list, rightSide)
 
-	footer := viewModel.footerText(layout.Width)
+	footerActions := viewModel.cachedActions
+	if footerActions == nil {
+		footerActions = viewModel.currentActionsForRows(rows)
+	}
+	footer := viewModel.footerText(layout.Width, rows, footerActions)
 	return view + "\n" + footer
 }
 
@@ -139,10 +150,9 @@ func (m appModel) listTitle() string {
 	return title
 }
 
-func (m appModel) listPane(height, width int) string {
-	vRows := m.visibleRows()
+func (m appModel) listPane(height, width int, rows []skillsRow) string {
 	var lines []string
-	if len(vRows) == 0 {
+	if len(rows) == 0 {
 		var detail []string
 		if m.result.Preflight != nil && !m.result.Preflight.CanRunSkills {
 			detail = append(detail,
@@ -209,9 +219,9 @@ func (m appModel) listPane(height, width int) string {
 	if selectedRow >= visible {
 		start = selectedRow - visible + 1
 	}
-	end := min(len(vRows), start+visible)
+	end := min(len(rows), start+visible)
 
-	for idx, row := range vRows[start:end] {
+	for idx, row := range rows[start:end] {
 		rowIndex := start + idx
 		var line string
 		if row.isHeader {
@@ -230,7 +240,7 @@ func (m appModel) listPane(height, width int) string {
 				line = dimStyle.Render(truncate(headerText, width-lipgloss.Width(hint))) + dimStyle.Render(hint)
 			}
 		} else {
-			view := display.Skill(row.skill)
+			view := m.cachedSkillView(row.skill)
 			mark := "  "
 			if m.isSelected(row.skill) {
 				mark = "● "
@@ -433,7 +443,7 @@ func (m appModel) metadataLinesForRows(rows []skillsRow, width int) []string {
 			}
 
 			// Parse health issues
-			view := display.Skill(sk)
+			view := m.cachedSkillView(sk)
 			skillIssues = append(skillIssues, view.HealthIssues...)
 		}
 
@@ -500,7 +510,7 @@ func (m appModel) metadataLinesForRows(rows []skillsRow, width int) []string {
 		return lines
 	}
 
-	view := display.Skill(row.skill)
+	view := m.cachedSkillView(row.skill)
 	isEffectivelyDisabled := row.skill.Disabled
 	if m.agent != "" {
 		isEffectivelyDisabled = false
@@ -654,14 +664,16 @@ func (m appModel) previewLinesForRows(rows []skillsRow, width int) []string {
 		return wrapped
 	}
 
-	view := display.Skill(row.skill)
+	view := m.cachedSkillView(row.skill)
 	if view.Preview == "" {
 		return []string{dimStyle.Render("No preview available for this skill.")}
 	}
 	if m.previewPending && !m.hasRenderedMarkdownPreview(view.Preview, width) {
 		return []string{dimStyle.Render("Preview updates when navigation pauses.")}
 	}
-
+	if !m.hasRenderedMarkdownPreview(view.Preview, width) && m.previewRendering {
+		return []string{dimStyle.Render("Rendering preview…")}
+	}
 	return m.renderMarkdownPreviewCached(view.Preview, width)
 }
 
@@ -672,15 +684,16 @@ type previewCacheKey struct {
 
 func (m appModel) renderMarkdownPreviewCached(markdown string, width int) []string {
 	if m.previewCache == nil {
-		return renderMarkdownPreview(markdown, width)
+		return []string{dimStyle.Render("Rendering preview…")}
 	}
 	key := previewCacheKey{markdown: markdown, width: width}
 	if lines, ok := m.previewCache[key]; ok {
 		return append([]string(nil), lines...)
 	}
-	lines := renderMarkdownPreview(markdown, width)
-	m.previewCache[key] = append([]string(nil), lines...)
-	return lines
+	// Cache miss — never block the main thread. The async render was (or will
+	// be) dispatched from Update via dispatchPreviewRender. Show a placeholder
+	// until the result arrives.
+	return []string{dimStyle.Render("Rendering preview…")}
 }
 
 func (m appModel) hasRenderedMarkdownPreview(markdown string, width int) bool {
@@ -691,18 +704,50 @@ func (m appModel) hasRenderedMarkdownPreview(markdown string, width int) bool {
 	return ok
 }
 
+var (
+	previewRenderersMu sync.Mutex
+	previewRenderers   = map[int]*glamour.TermRenderer{}
+	glamourRenderMu    sync.Mutex // serialises Render() calls; renderers are not documented thread-safe
+)
+
+// previewRenderer returns a glamour renderer for the given render width,
+// creating and caching one as needed. Construction is ~hundreds of ms the
+// first time; subsequent lookups are O(1).
+func previewRenderer(width int) *glamour.TermRenderer {
+	previewRenderersMu.Lock()
+	defer previewRenderersMu.Unlock()
+	if r, ok := previewRenderers[width]; ok {
+		return r
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithStyles(compactPreviewMarkdownStyle()),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return nil
+	}
+	// Keep the cache bounded: evict one entry if we exceed 12 widths.
+	if len(previewRenderers) > 12 {
+		for k := range previewRenderers {
+			delete(previewRenderers, k)
+			break
+		}
+	}
+	previewRenderers[width] = r
+	return r
+}
+
 func renderMarkdownPreview(markdown string, width int) []string {
 	markdown = stripMarkdownFrontmatter(markdown)
 	if strings.TrimSpace(markdown) == "" {
 		return []string{dimStyle.Render("No preview available for this skill.")}
 	}
 	renderWidth := max(20, width-2)
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStyles(compactPreviewMarkdownStyle()),
-		glamour.WithWordWrap(renderWidth),
-	)
-	if err == nil {
+	renderer := previewRenderer(renderWidth)
+	if renderer != nil {
+		glamourRenderMu.Lock()
 		rendered, renderErr := renderer.Render(markdown)
+		glamourRenderMu.Unlock()
 		if renderErr == nil && strings.TrimSpace(rendered) != "" {
 			return strings.Split(strings.TrimRight(rendered, "\n"), "\n")
 		}
@@ -758,7 +803,7 @@ func (m appModel) detailLines(width int) []string {
 	if row.isHeader {
 		return m.metadataLines(width)
 	}
-	view := display.Skill(row.skill)
+	view := m.cachedSkillView(row.skill)
 	lines := []string{
 		titleStyle.Render(view.Name),
 		"",
@@ -801,7 +846,7 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 			globalCount++
 		}
 
-		view := display.Skill(sk)
+		view := m.cachedSkillView(sk)
 		skillIssues = append(skillIssues, view.HealthIssues...)
 	}
 
@@ -973,7 +1018,7 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 			}
 		} else {
 			sk := selectedChild.skill
-			view := display.Skill(sk)
+			view := m.cachedSkillView(sk)
 			lockVal := display.LockSummary(view)
 			if lockVal == "not tracked" {
 				lockVal = warningStyle.Render("not tracked")
@@ -1246,7 +1291,7 @@ func (m appModel) renderActionResult(width int) []string {
 	return lines
 }
 
-func (m appModel) footerText(width int) string {
+func (m appModel) footerText(width int, rows []skillsRow, actions []actions.CommandPreview) string {
 	var text string
 	if m.running {
 		text = "Working…"
@@ -1255,9 +1300,8 @@ func (m appModel) footerText(width int) string {
 	} else if m.searching {
 		text = "type search · enter apply · esc cancel · backspace edit"
 	} else if m.detailModal {
-		modalActions := m.currentActions()
 		parts := []string{"↑/↓ scroll"}
-		if hasAvailableAction(modalActions, "open_skill") {
+		if hasAvailableAction(actions, "open_skill") {
 			parts = append(parts, "o edit")
 		}
 		parts = append(parts, "c commands", "esc/q close")
@@ -1267,30 +1311,26 @@ func (m appModel) footerText(width int) string {
 	} else if m.helpOpen {
 		text = "esc/q/? close help"
 	} else if m.focus == focusMetadata {
-		footerActions := m.currentActions()
 		parts := []string{"↑/↓ scroll metadata", "enter open", "c commands"}
-		if hasAvailableToggleAction(footerActions) {
+		if hasAvailableToggleAction(actions) {
 			parts = append(parts, "e enable/disable")
 		}
 		parts = append(parts, "? help")
 		text = strings.Join(parts, " · ")
 	} else if m.focus == focusPreview {
-		footerActions := m.currentActions()
 		parts := []string{"↑/↓ scroll preview", "enter open", "c commands"}
-		if hasAvailableToggleAction(footerActions) {
+		if hasAvailableToggleAction(actions) {
 			parts = append(parts, "e enable/disable")
 		}
 		parts = append(parts, "? help")
 		text = strings.Join(parts, " · ")
 	} else {
 		// focusSkills
-		rows := m.visibleRows()
 		if len(rows) > 0 && m.selected >= 0 && m.selected < len(rows) {
 			row := rows[m.selected]
-			footerActions := m.currentActions()
 			if row.isHeader {
 				parts := []string{"enter browse"}
-				if hasAvailableToggleAction(footerActions) {
+				if hasAvailableToggleAction(actions) {
 					parts = append(parts, "e enable/disable source")
 				}
 				if discoverable, _ := m.isSourceDiscoverable(row.groupName); discoverable {
@@ -1300,14 +1340,14 @@ func (m appModel) footerText(width int) string {
 				text = strings.Join(parts, " · ")
 			} else {
 				parts := []string{"enter open"}
-				if hasAvailableToggleAction(footerActions) {
+				if hasAvailableToggleAction(actions) {
 					parts = append(parts, "e enable/disable")
 				}
 				parts = append(parts, "c actions")
-				if hasAvailableAction(footerActions, preferredUpdateActionID(m.selectedCount())) {
+				if hasAvailableAction(actions, preferredUpdateActionID(m.selectedCount())) {
 					parts = append(parts, "u update")
 				}
-				if hasAvailableAction(footerActions, preferredRemoveActionID(m.selectedCount())) {
+				if hasAvailableAction(actions, preferredRemoveActionID(m.selectedCount())) {
 					parts = append(parts, "x remove")
 				}
 				parts = append(parts, "? help")

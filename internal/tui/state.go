@@ -7,6 +7,7 @@ import (
 
 	"github.com/alvinunreal/lazyskills/internal/actions"
 	"github.com/alvinunreal/lazyskills/internal/compat"
+	"github.com/alvinunreal/lazyskills/internal/display"
 	"github.com/alvinunreal/lazyskills/internal/model"
 )
 
@@ -577,4 +578,33 @@ func (m appModel) getThreePaneLayout() (listWidth, rightWidth, topHeight, bottom
 	}
 	bottomHeight = height - topHeight
 	return
+}
+
+// rebuildSkillViews pre-computes display.Skill for every skill in the current
+// snapshot. Called once per snapshotMsg; the pointer-valued map survives
+// Bubble Tea's value-copied model because maps are reference types.
+func (m *appModel) rebuildSkillViews() {
+	if len(m.result.Skills) == 0 {
+		m.skillViews = nil
+		return
+	}
+	m.skillViews = make(map[*model.Skill]*display.SkillView, len(m.result.Skills))
+	for _, sk := range m.result.Skills {
+		v := display.Skill(sk)
+		m.skillViews[sk] = &v
+	}
+}
+
+// cachedSkillView returns the cached SkillView for sk, falling back to
+// display.Skill for skills not in the snapshot (e.g. discovery skills).
+func (m appModel) cachedSkillView(sk *model.Skill) display.SkillView {
+	if sk == nil {
+		return display.SkillView{}
+	}
+	if m.skillViews != nil {
+		if v, ok := m.skillViews[sk]; ok {
+			return *v
+		}
+	}
+	return display.Skill(sk)
 }
