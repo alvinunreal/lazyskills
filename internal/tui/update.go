@@ -15,6 +15,7 @@ import (
 	"github.com/alvinunreal/lazyskills/internal/compat"
 	"github.com/alvinunreal/lazyskills/internal/locks"
 	"github.com/alvinunreal/lazyskills/internal/model"
+	"github.com/alvinunreal/lazyskills/internal/registry"
 	"github.com/alvinunreal/lazyskills/internal/runner"
 	"github.com/alvinunreal/lazyskills/internal/selfupdate"
 )
@@ -116,6 +117,19 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateError = nil
 		}
 		m.syncViewport()
+	case registryDebounceMsg:
+		if msg.generation == m.registryGeneration {
+			m.registryLoading = true
+			return m, m.searchRegistryCmd(msg.query, msg.generation)
+		}
+	case registrySearchMsg:
+		if msg.generation == m.registryGeneration {
+			m.registryLoading = false
+			m.registryResults = msg.results
+			m.registryError = msg.err
+			m.registrySelected = 0
+			m.syncViewport()
+		}
 	case tea.KeyMsg:
 		key := msg.String()
 		var postKeyCmd tea.Cmd
@@ -123,6 +137,156 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if key == "ctrl+c" || key == "q" {
 				return m, tea.Quit
 			}
+			return m, nil
+		}
+		if m.registryModal {
+			switch key {
+			case "esc":
+				m.registryModal = false
+				m.registryQuery = ""
+				m.registryResults = nil
+				m.registryError = nil
+				m.registryLoading = false
+				m.syncViewport()
+				return m, nil
+			case "q":
+				if m.registryFocusList {
+					m.registryModal = false
+					m.registryQuery = ""
+					m.registryResults = nil
+					m.registryError = nil
+					m.registryLoading = false
+					m.syncViewport()
+					return m, nil
+				}
+				// Otherwise let it flow down to type 'q' in search query
+			case "ctrl+c":
+				return m, tea.Quit
+			case "tab":
+				m.registryFocusList = !m.registryFocusList
+				m.syncViewport()
+				return m, nil
+			case "up", "k":
+				if len(m.registryResults) > 0 {
+					m.registrySelected--
+					if m.registrySelected < 0 {
+						m.registrySelected = len(m.registryResults) - 1
+					}
+					m.syncViewport()
+				}
+				return m, nil
+			case "down", "j":
+				if len(m.registryResults) > 0 {
+					m.registrySelected++
+					if m.registrySelected >= len(m.registryResults) {
+						m.registrySelected = 0
+					}
+					m.syncViewport()
+				}
+				return m, nil
+			case "enter":
+				if !m.registryFocusList {
+					if len(m.registryQuery) >= 2 && (m.registryError != nil || len(m.registryResults) == 0) {
+						m.registryGeneration++
+						m.registryLoading = true
+						m.syncViewport()
+						return m, m.searchRegistryCmd(m.registryQuery, m.registryGeneration)
+					}
+					if len(m.registryResults) > 0 {
+						m.registryFocusList = true
+						m.syncViewport()
+					}
+					return m, nil
+				}
+				// List is focused: start project install confirmation
+				if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
+					s := m.registryResults[m.registrySelected]
+					status, checkMsg := m.checkRegistrySkillStatus(s)
+					if status == StatusInstalled || s.Invalid {
+						// Do not install
+						return m, nil
+					}
+					// Build preview
+					previews := actions.ForAvailableSkillWithOptions(s.Source, actions.InstallOptions{
+						DisplayName: s.DisplayName,
+						Slug:        s.Slug,
+						Global:      false,
+					})
+					if len(previews) > 0 && previews[0].Available {
+						m.registryModal = false
+						armed := previews[0]
+						if status == StatusSimilarInstalled {
+							armed.Description += " (Warning: A similar skill named '" + checkMsg + "' is already installed)."
+						}
+						m.pendingAction = &armed
+						m.confirming = true
+						m.confirmInput = ""
+						m.confirmError = ""
+						m.syncViewport()
+						return m, nil
+					}
+				}
+				return m, nil
+			case "g":
+				if m.registryFocusList {
+					// list focused: start global install confirmation
+					if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
+						s := m.registryResults[m.registrySelected]
+						status, checkMsg := m.checkRegistrySkillStatus(s)
+						if status == StatusInstalled || s.Invalid {
+							// Do not install
+							return m, nil
+						}
+						previews := actions.ForAvailableSkillWithOptions(s.Source, actions.InstallOptions{
+							DisplayName: s.DisplayName,
+							Slug:        s.Slug,
+							Global:      true,
+						})
+						if len(previews) > 0 && previews[0].Available {
+							m.registryModal = false
+							armed := previews[0]
+							if status == StatusSimilarInstalled {
+								armed.Description += " (Warning: A similar skill named '" + checkMsg + "' is already installed)."
+							}
+							m.pendingAction = &armed
+							m.confirming = true
+							m.confirmInput = ""
+							m.confirmError = ""
+							m.syncViewport()
+							return m, nil
+						}
+					}
+					return m, nil
+				}
+				// fallback: typing 'g'
+			}
+
+			// If input is focused and it's a typing key
+			if !m.registryFocusList {
+				switch key {
+				case "backspace", "ctrl+h":
+					if len(m.registryQuery) > 0 {
+						m.registryQuery = m.registryQuery[:len(m.registryQuery)-1]
+					}
+				default:
+					if len(key) == 1 {
+						m.registryQuery += key
+					}
+				}
+				m.registrySelected = 0
+				m.registryGeneration++
+				if len(m.registryQuery) >= 2 {
+					m.syncViewport()
+					return m, scheduleRegistrySearch(m.registryQuery, m.registryGeneration)
+				} else {
+					m.registryResults = nil
+					m.registryError = nil
+					m.registryLoading = false
+					m.syncViewport()
+					return m, nil
+				}
+			}
+
 			return m, nil
 		}
 		if m.appUpdateModal {
@@ -427,6 +591,9 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updatingApp = false
 			m.updateSuccess = false
 			m.updateError = nil
+			m.syncViewport()
+		case "n":
+			m = m.openRegistryModal()
 			m.syncViewport()
 		case "c":
 			m.commands = !m.commands
@@ -904,6 +1071,12 @@ func requiresExactConfirmation(action actions.CommandPreview) bool {
 }
 
 func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.Cmd) {
+	if action.Exec.Internal == "find_new_skills" {
+		m.commands = false
+		m = m.openRegistryModal()
+		m.syncViewport()
+		return m, nil
+	}
 	if action.ID == "source_discover" {
 		m.commands = false
 		m.actionResult = nil
@@ -1080,6 +1253,18 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 		partialSuccess := cleanupLockAfterRemove(action, m.cwd, &result)
 		return actionResultMsg{result: result, mutates: action.Mutates, partialSuccess: partialSuccess}
 	}
+}
+
+func (m appModel) openRegistryModal() appModel {
+	m.registryModal = true
+	m.registryQuery = ""
+	m.registryResults = nil
+	m.registrySelected = 0
+	m.registryError = nil
+	m.registryLoading = false
+	m.registryFocusList = false
+	m.registryGeneration++
+	return m
 }
 
 func cleanupLockAfterRemove(action actions.CommandPreview, cwd string, result *runner.Result) bool {
@@ -1378,4 +1563,24 @@ func (m appModel) applyUpdateCmd() tea.Cmd {
 		err := selfupdate.Apply(ctx, m.updatePlan, nil)
 		return appUpdateResultMsg{err: err}
 	}
+}
+
+func (m appModel) searchRegistryCmd(query string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		client := registry.NewClient()
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		results, err := client.Search(ctx, query, 10)
+		return registrySearchMsg{
+			generation: gen,
+			results:    results,
+			err:        err,
+		}
+	}
+}
+
+func scheduleRegistrySearch(query string, generation int) tea.Cmd {
+	return tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg {
+		return registryDebounceMsg{generation: generation, query: query}
+	})
 }
