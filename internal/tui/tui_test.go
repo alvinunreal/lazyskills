@@ -712,6 +712,16 @@ func TestDeleteBrokenSymlinkRequiresScopedIdentity(t *testing.T) {
 	if _, err := os.Lstat(globalLink); err != nil {
 		t.Fatalf("expected global link to remain, err=%v", err)
 	}
+
+	action.Exec.Args = []string{"", "Duplicate"}
+	updated, cmd = m.executeAction(action)
+	next = updated.(appModel)
+	if cmd != nil {
+		t.Fatalf("expected empty-scope delete action not to run, got cmd=%v", cmd)
+	}
+	if next.actionResult == nil || next.actionResult.ExitCode != -1 || !strings.Contains(next.actionResult.Err, "missing scoped skill identity") {
+		t.Fatalf("expected empty-scope identity error, got %#v", next.actionResult)
+	}
 }
 
 func TestDeleteBrokenSymlinkTargetsMatchingScope(t *testing.T) {
