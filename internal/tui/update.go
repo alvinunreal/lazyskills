@@ -1170,16 +1170,18 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 				if info.Mode()&os.ModeSymlink == 0 {
 					continue
 				}
-				if _, err := os.Stat(op.Path); err == nil || !os.IsNotExist(err) {
-					if err != nil {
-						// If the target cannot be checked (for example EACCES while
-						// following the symlink), keep the symlink and surface the
-						// failure instead of risking deletion of a path that may no
-						// longer be broken.
-						failed++
-						if firstErr == "" {
-							firstErr = err.Error()
-						}
+				_, statErr := os.Stat(op.Path)
+				if statErr == nil {
+					continue // target exists again; no longer a broken symlink
+				}
+				if !os.IsNotExist(statErr) {
+					// If the target cannot be checked (for example EACCES while
+					// following the symlink), keep the symlink and surface the
+					// failure instead of risking deletion of a path that may no
+					// longer be broken.
+					failed++
+					if firstErr == "" {
+						firstErr = statErr.Error()
 					}
 					continue
 				}
