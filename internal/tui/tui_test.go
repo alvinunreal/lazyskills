@@ -744,6 +744,11 @@ func TestDeleteBrokenSymlinkRechecksPathBeforeRemove(t *testing.T) {
 	if cmd == nil || next.actionResult != nil {
 		t.Fatalf("expected cleanup success with rescan, result=%#v cmd=%v", next.actionResult, cmd)
 	}
+	updated, _ = next.Update(cmd())
+	next = updated.(appModel)
+	if next.actionResult != nil {
+		t.Fatalf("expected successful cleanup result to stay clear after rescan, got %#v", next.actionResult)
+	}
 	if _, err := os.Lstat(brokenLink); !os.IsNotExist(err) {
 		t.Fatalf("expected still-broken symlink to be deleted, lstat err=%v", err)
 	}
