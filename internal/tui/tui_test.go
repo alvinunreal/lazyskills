@@ -679,6 +679,38 @@ func TestDeleteBrokenSymlinkFailureRescans(t *testing.T) {
 	}
 }
 
+func TestDeleteBrokenSymlinkRequiresScopedIdentity(t *testing.T) {
+	cwd := t.TempDir()
+	projectLink := filepath.Join(cwd, "project-broken")
+	globalLink := filepath.Join(cwd, "global-broken")
+	if err := os.Symlink(filepath.Join(cwd, "missing-project"), projectLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(cwd, "missing-global"), globalLink); err != nil {
+		t.Fatal(err)
+	}
+	m := appModel{cwd: cwd, width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{
+		{Name: "Duplicate", Scope: model.ScopeGlobal, ObservedPaths: []model.ObservedPath{{Path: globalLink, Status: model.StatusBrokenSymlink}}},
+		{Name: "Duplicate", Scope: model.ScopeProject, ObservedPaths: []model.ObservedPath{{Path: projectLink, Status: model.StatusBrokenSymlink}}},
+	}}}
+	action := actions.CommandPreview{ID: "delete_broken_symlink", ConfirmValue: "Duplicate", Exec: actions.ExecSpec{Internal: "delete_broken_symlink"}}
+
+	updated, cmd := m.executeAction(action)
+	next := updated.(appModel)
+	if cmd != nil {
+		t.Fatalf("expected malformed delete action not to run, got cmd=%v", cmd)
+	}
+	if next.actionResult == nil || next.actionResult.ExitCode != -1 || !strings.Contains(next.actionResult.Err, "missing scoped skill identity") {
+		t.Fatalf("expected missing scoped identity error, got %#v", next.actionResult)
+	}
+	if _, err := os.Lstat(projectLink); err != nil {
+		t.Fatalf("expected project link to remain, err=%v", err)
+	}
+	if _, err := os.Lstat(globalLink); err != nil {
+		t.Fatalf("expected global link to remain, err=%v", err)
+	}
+}
+
 func TestDeleteBrokenSymlinkTargetsMatchingScope(t *testing.T) {
 	cwd := t.TempDir()
 	projectLink := filepath.Join(cwd, "project-broken")
@@ -700,6 +732,11 @@ func TestDeleteBrokenSymlinkTargetsMatchingScope(t *testing.T) {
 	next := updated.(appModel)
 	if cmd == nil || next.actionResult != nil {
 		t.Fatalf("expected scoped delete success with rescan, result=%#v cmd=%v", next.actionResult, cmd)
+	}
+	updated, _ = next.Update(cmd())
+	next = updated.(appModel)
+	if next.actionResult != nil {
+		t.Fatalf("expected scoped delete result to stay clear after rescan, got %#v", next.actionResult)
 	}
 	if _, err := os.Lstat(projectLink); !os.IsNotExist(err) {
 		t.Fatalf("expected project broken symlink to be deleted, lstat err=%v", err)

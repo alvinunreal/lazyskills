@@ -1140,12 +1140,13 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 		m.confirming = false
 		m.confirmInput = ""
 		m.confirmError = ""
-		targetScope := ""
-		targetName := action.ConfirmValue
-		if len(action.Exec.Args) >= 2 {
-			targetScope = action.Exec.Args[0]
-			targetName = action.Exec.Args[1]
+		if len(action.Exec.Args) < 2 {
+			m.actionResult = &runner.Result{Program: "delete-broken-symlink", Args: []string{action.ConfirmValue}, ExitCode: -1, Err: "delete action is missing scoped skill identity"}
+			m.syncViewport()
+			return m, nil
 		}
+		targetScope := action.Exec.Args[0]
+		targetName := action.Exec.Args[1]
 		removed, failed := 0, 0
 		firstErr := ""
 		for _, sk := range m.result.Skills {
