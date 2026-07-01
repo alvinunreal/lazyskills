@@ -162,8 +162,9 @@ var (
 )
 
 type snapshotMsg struct {
-	result model.ScanResult
-	err    error
+	result       model.ScanResult
+	err          error
+	actionResult *runner.Result
 }
 
 type discoveryResultMsg struct {
@@ -225,5 +226,12 @@ func loadSnapshot(cwd string) tea.Cmd {
 	return func() tea.Msg {
 		result, err := scan.Snapshot(cwd)
 		return snapshotMsg{result: result, err: err}
+	}
+}
+
+func loadSnapshotWithActionResult(cwd string, actionResult runner.Result) tea.Cmd {
+	return func() tea.Msg {
+		result, err := scan.Snapshot(cwd)
+		return snapshotMsg{result: result, err: err, actionResult: &actionResult}
 	}
 }

@@ -710,6 +710,31 @@ func TestDeleteBrokenSymlinkRechecksPathBeforeRemove(t *testing.T) {
 	}
 }
 
+func TestDeleteBrokenSymlinkNoopReportsAndRescans(t *testing.T) {
+	cwd := t.TempDir()
+	missingLink := filepath.Join(cwd, "already-gone")
+	m := appModel{cwd: cwd, width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{{
+		Name:          "Broken",
+		Scope:         model.ScopeProject,
+		ObservedPaths: []model.ObservedPath{{Path: missingLink, Status: model.StatusBrokenSymlink}},
+	}}}}
+	action := actions.CommandPreview{ID: "delete_broken_symlink", ConfirmValue: "Broken", Exec: actions.ExecSpec{Internal: "delete_broken_symlink", Args: []string{string(model.ScopeProject), "Broken"}}}
+
+	updated, cmd := m.executeAction(action)
+	next := updated.(appModel)
+	if cmd == nil {
+		t.Fatal("expected no-op delete to trigger a rescan")
+	}
+	if next.actionResult == nil || !strings.Contains(next.actionResult.Stdout, "0 broken symlink") {
+		t.Fatalf("expected no-op informational action result, got %#v", next.actionResult)
+	}
+	updated, _ = next.Update(cmd())
+	next = updated.(appModel)
+	if next.actionResult == nil || !strings.Contains(next.actionResult.Stdout, "0 broken symlink") {
+		t.Fatalf("expected no-op informational result to survive rescan, got %#v", next.actionResult)
+	}
+}
+
 func TestDirectUpdateHotkeyStartsCurrentOrBulkAction(t *testing.T) {
 	m := actionTestModel(t.TempDir())
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
