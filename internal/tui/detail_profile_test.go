@@ -199,7 +199,7 @@ func TestProfileRealSourceModalTimings(t *testing.T) {
 		childrenDuration := time.Since(start)
 
 		start = time.Now()
-		lines := m.sourceModalDetailLines(80)
+		lines := m.sourceModalDetailLines(m.modalSource, 80)
 		detailDuration := time.Since(start)
 
 		start = time.Now()

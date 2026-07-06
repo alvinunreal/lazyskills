@@ -14,6 +14,7 @@ import (
 	"github.com/alvinunreal/lazyskills/internal/display"
 	"github.com/alvinunreal/lazyskills/internal/model"
 	"github.com/alvinunreal/lazyskills/internal/selfupdate"
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -609,59 +610,7 @@ func (m appModel) previewLinesForRows(rows []skillsRow, width int) []string {
 
 	row := rows[m.selected]
 	if row.isHeader {
-		// Read-only glance: list installed + available skills. The modal
-		// (enter) is the interactive browse/install surface.
-		skills := m.sourceGroupSkills(row.groupName)
-		lines := []string{sectionHeaderStyle.Render(fmt.Sprintf("Installed (%d)", len(skills)))}
-		if len(skills) == 0 {
-			lines = append(lines, dimStyle.Render("  none"))
-		} else {
-			for _, sk := range skills {
-				badge := "[P]"
-				if sk.Scope == model.ScopeGlobal {
-					badge = "[G]"
-				}
-				lines = append(lines, fmt.Sprintf("  • %s %s", sk.Name, badge))
-			}
-		}
-
-		lines = append(lines, "")
-
-		disc, discOk := m.discovery[row.groupName]
-		_, _, isRemote := parseRemoteGitHubSource(row.groupName)
-		switch {
-		case !discOk:
-			lines = append(lines, sectionHeaderStyle.Render("Available"), dimStyle.Render("  press d to scan this source"))
-		case disc.Status == DiscoveryLoading && isRemote:
-			lines = append(lines, sectionHeaderStyle.Render("Available"), dimStyle.Render("  scanning…"))
-		case disc.Status == DiscoveryLoading:
-			lines = append(lines, sectionHeaderStyle.Render("Available"), dimStyle.Render("  scanning…"))
-		case disc.Status == DiscoveryFailed:
-			lines = append(lines, sectionHeaderStyle.Render("Available"), errorStyle.Render("  couldn't scan: "+disc.Error))
-		default: // DiscoveryReady
-			var avail []string
-			installed := m.installedSkillNames(row.groupName)
-			for _, ds := range disc.Skills {
-				if !isSkillNameInstalled(ds.Name, installed) {
-					avail = append(avail, ds.Name)
-				}
-			}
-			lines = append(lines, sectionHeaderStyle.Render(fmt.Sprintf("Available (%d)", len(avail))))
-			if len(avail) == 0 {
-				lines = append(lines, dimStyle.Render("  all installed"))
-			} else {
-				for _, name := range avail {
-					lines = append(lines, fmt.Sprintf("  + %s", name))
-				}
-			}
-		}
-
-		lines = append(lines, "", dimStyle.Render("enter to browse · d to scan"))
-		var wrapped []string
-		for _, line := range lines {
-			wrapped = append(wrapped, wrapText(line, width))
-		}
-		return wrapped
+		return m.sourceModalDetailLines(row.groupName, width)
 	}
 
 	view := m.cachedSkillView(row.skill)
@@ -803,7 +752,7 @@ func compactPreviewMarkdownStyle() ansi.StyleConfig {
 
 func (m appModel) detailLines(width int) []string {
 	if m.modalSource != "" {
-		return m.sourceModalDetailLines(width)
+		return m.sourceModalDetailLines(m.modalSource, width)
 	}
 	rows := m.visibleRows()
 	if len(rows) == 0 || m.selected < 0 || m.selected >= len(rows) {
@@ -829,8 +778,7 @@ func (m appModel) detailLines(width int) []string {
 	return lines
 }
 
-func (m appModel) sourceModalDetailLines(width int) []string {
-	groupName := m.modalSource
+func (m appModel) sourceModalDetailLines(groupName string, width int) []string {
 	visible, total := m.getGroupCounts(groupName)
 	stateVal := "▼ expanded"
 	if m.isCollapsed(groupName) {
@@ -924,13 +872,14 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 	lines = append(lines, "")
 
 	childRows := m.modalChildRows(groupName)
+	childSelected := m.detailModal || m.focus == focusPreview
 
 	lines = append(lines, sectionHeaderStyle.Render("Installed Skills:"))
 	installedCount := 0
 	for idx, cr := range childRows {
 		if !cr.isAvailable {
 			installedCount++
-			if idx == m.modalSelected {
+			if childSelected && idx == m.modalSelected {
 				scopeBadgeStr := "P"
 				if cr.skill.Scope == model.ScopeGlobal {
 					scopeBadgeStr = "G"
@@ -984,7 +933,7 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 			for idx, cr := range childRows {
 				if cr.isAvailable {
 					availableCount++
-					if idx == m.modalSelected {
+					if childSelected && idx == m.modalSelected {
 						label := fmt.Sprintf("%s [available]", cr.discoveredSkill.Name)
 						lines = append(lines, selectedStyle.Render(fmt.Sprintf("› %s", label)))
 					} else {
@@ -999,7 +948,7 @@ func (m appModel) sourceModalDetailLines(width int) []string {
 		}
 	}
 
-	if len(childRows) > 0 && m.modalSelected >= 0 && m.modalSelected < len(childRows) {
+	if childSelected && len(childRows) > 0 && m.modalSelected >= 0 && m.modalSelected < len(childRows) {
 		selectedChild := childRows[m.modalSelected]
 		lines = append(lines, "")
 		previewDivider := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(strings.Repeat("─", max(1, width)))
@@ -1328,12 +1277,35 @@ func (m appModel) footerText(width int, rows []skillsRow, actions []actions.Comm
 		parts = append(parts, "? help")
 		text = strings.Join(parts, " · ")
 	} else if m.focus == focusPreview {
-		parts := []string{"↑/↓ scroll preview", "enter open", "c commands"}
-		if hasAvailableToggleAction(actions) {
-			parts = append(parts, "e enable/disable")
+		isHeader := false
+		var headerRow skillsRow
+		if len(rows) > 0 && m.selected >= 0 && m.selected < len(rows) {
+			headerRow = rows[m.selected]
+			isHeader = headerRow.isHeader
 		}
-		parts = append(parts, "? help")
-		text = strings.Join(parts, " · ")
+		if isHeader {
+			parts := []string{"esc/q close", "↑/↓ select"}
+			if child, ok := m.currentModalSelectedChild(); ok {
+				if child.isAvailable && hasAvailableAction(actions, "install_skill") {
+					parts = append(parts, "enter install")
+				} else if !child.isAvailable && hasAvailableAction(actions, "open_skill") {
+					parts = append(parts, "enter open", "o open")
+				}
+			}
+			parts = append(parts, "c actions")
+			if discoverable, _ := m.isSourceDiscoverable(headerRow.groupName); discoverable {
+				parts = append(parts, "d scan")
+			}
+			parts = append(parts, "? help")
+			text = strings.Join(parts, " · ")
+		} else {
+			parts := []string{"↑/↓ scroll preview", "enter open", "c commands"}
+			if hasAvailableToggleAction(actions) {
+				parts = append(parts, "e enable/disable")
+			}
+			parts = append(parts, "? help")
+			text = strings.Join(parts, " · ")
+		}
 	} else {
 		// focusSkills
 		if len(rows) > 0 && m.selected >= 0 && m.selected < len(rows) {
@@ -1526,39 +1498,60 @@ func (m appModel) currentDetailSkillActions() []actions.CommandPreview {
 	return actions.ForSkill(rows[m.selected].skill)
 }
 
-func (m *appModel) ensureSourceModalSelectionVisible() {
-	if m.modalSource == "" {
+func (m *appModel) ensureSelectedChildVisible(groupName string, isModal bool) {
+	var vp *viewport.Model
+	var width int
+	if isModal {
+		vp = &m.viewport
+		width = m.viewport.Width
+	} else {
+		vp = &m.previewViewport
+		width = m.previewViewport.Width
+	}
+
+	lines := m.sourceModalDetailLines(groupName, width)
+	selectedLine := -1
+	for idx, line := range lines {
+		if strings.Contains(line, "› ") {
+			selectedLine = idx
+			break
+		}
+	}
+	if selectedLine < 0 {
 		return
 	}
-	// The source modal renders source metadata before the child list. Keep a
-	// little context above the selected child rather than treating modalSelected
-	// as a raw viewport line number.
-	selectedLine := 8 + m.modalSelected
-	if selectedLine < 0 {
-		selectedLine = 0
-	}
-	height := m.viewport.Height
+
+	height := vp.Height
 	if height <= 0 {
-		// View() computes the final modal viewport height. Use the same rough
-		// default here so keyboard movement updates the offset before render.
 		height = 18
 	}
-	if selectedLine < m.viewport.YOffset+3 {
+	if selectedLine < vp.YOffset+3 {
 		offset := selectedLine - 3
 		if offset < 0 {
 			offset = 0
 		}
-		m.viewport.SetYOffset(offset)
+		vp.SetYOffset(offset)
 		return
 	}
-	bottom := m.viewport.YOffset + height - 4
+	bottom := vp.YOffset + height - 4
 	if selectedLine > bottom {
 		offset := selectedLine - height + 4
 		if offset < 0 {
 			offset = 0
 		}
-		m.viewport.SetYOffset(offset)
+		vp.SetYOffset(offset)
 	}
+}
+
+func (m *appModel) ensureSourceModalSelectionVisible() {
+	if m.modalSource == "" {
+		return
+	}
+	m.ensureSelectedChildVisible(m.modalSource, true)
+}
+
+func (m *appModel) ensurePreviewSelectionVisible(groupName string) {
+	m.ensureSelectedChildVisible(groupName, false)
 }
 
 func (m appModel) confirmationOverlay(layout appLayout) string {

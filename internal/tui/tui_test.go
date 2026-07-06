@@ -1182,7 +1182,7 @@ func TestModalShowsScanFreshness(t *testing.T) {
 	m.discovery = map[string]SourceDiscovery{
 		"owner/repo": {Status: DiscoveryReady, ScannedAt: time.Now().Add(-5 * time.Minute)},
 	}
-	out := strings.Join(m.sourceModalDetailLines(80), "\n")
+	out := strings.Join(m.sourceModalDetailLines("owner/repo", 80), "\n")
 	if !strings.Contains(out, "scanned 5m ago") {
 		t.Fatalf("expected scan freshness in modal, got %q", out)
 	}
@@ -2160,10 +2160,17 @@ func TestCollapseExpandSourceGroups(t *testing.T) {
 		t.Fatalf("expected selection to remain on collapsed header row 0, got %d", m.selected)
 	}
 
-	// View should show + and hide "One" and "Two"
+	// View should show +
 	out2 := m.View()
-	if !strings.Contains(out2, "+ owner/one") || strings.Contains(out2, "  One [P]") || strings.Contains(out2, "  Two [P]") {
-		t.Fatalf("expected collapsed group A (with ASCII plus) to hide child skills, got:\n%s", out2)
+	if !strings.Contains(out2, "+ owner/one") {
+		t.Fatalf("expected collapsed group A (with ASCII plus), got:\n%s", out2)
+	}
+	// Verify that One and Two are not in visible rows to check that they compile out
+	rowsAfterCollapse := m.visibleRows()
+	for _, r := range rowsAfterCollapse {
+		if !r.isHeader && (r.skill.Name == "One" || r.skill.Name == "Two") {
+			t.Fatalf("expected collapsed group A to hide child skills One and Two from visible rows, but they were visible")
+		}
 	}
 
 	// Press l to expand "owner/one" again
@@ -2276,17 +2283,14 @@ func TestRichSourceInventoryMetadataAndActions(t *testing.T) {
 	// 2. Assert source preview lists installed skills + available section
 	prevLines := m.previewLines(80)
 	prevJoined := strings.Join(prevLines, "\n")
-	if !strings.Contains(prevJoined, "Installed (2)") {
-		t.Errorf("expected installed count header in preview, got %q", prevJoined)
+	if !strings.Contains(prevJoined, "Installed Skills:") {
+		t.Errorf("expected installed section in preview, got %q", prevJoined)
 	}
-	if !strings.Contains(prevJoined, "• One [P]") || !strings.Contains(prevJoined, "• Two [G]") {
+	if !strings.Contains(prevJoined, "One") || !strings.Contains(prevJoined, "Two") {
 		t.Errorf("expected installed skills listed in preview, got %q", prevJoined)
 	}
-	if !strings.Contains(prevJoined, "press d to scan this source") {
+	if !strings.Contains(prevJoined, "Press d to scan this source.") {
 		t.Errorf("expected available scan hint in preview, got %q", prevJoined)
-	}
-	if !strings.Contains(prevJoined, "enter to browse · d to scan") {
-		t.Errorf("expected action hint in preview, got %q", prevJoined)
 	}
 
 	// 3. Assert currentActions for source row
@@ -3648,5 +3652,115 @@ func TestTUIPreviewRenderIgnoresCompletionWhenNewerRenderInFlight(t *testing.T) 
 	}
 	if cmd != nil {
 		t.Fatalf("expected no duplicate dispatch while newer render remains in flight, got %v", cmd)
+	}
+}
+
+func TestSourcePreviewNavigationAndActions(t *testing.T) {
+	t.Setenv("EDITOR", "nano")
+
+	// Set up model with a header/source row, one installed skill, and one available skill discovered.
+	m := appModel{
+		width:           120,
+		height:          32,
+		focus:           focusPreview,
+		collapsedGroups: make(map[string]bool),
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{
+					Name:          "InstalledSkill",
+					Scope:         model.ScopeProject,
+					CanonicalPath: "/path/to/InstalledSkill",
+					Description:   "This is installed.",
+					LocalLock:     &model.LocalLockEntry{Source: "owner/repo", Ref: "main"},
+				},
+			},
+		},
+	}
+	m.discovery = map[string]SourceDiscovery{
+		"owner/repo": {
+			Status: DiscoveryReady,
+			Skills: []DiscoveredSkill{
+				{Name: "InstalledSkill", Source: "owner/repo"}, // already installed
+				{Name: "DiscoveredSkill", Source: "owner/repo", Description: "An available skill", Preview: "Markdown preview"},
+			},
+		},
+	}
+
+	m.selected = 0
+	m.syncViewport()
+
+	// 1. Verify that modalSource got synced with the selected header row since focus is focusPreview
+	if m.modalSource != "owner/repo" {
+		t.Fatalf("expected modalSource to be owner/repo, got %q", m.modalSource)
+	}
+
+	childRows := m.modalChildRows(m.modalSource)
+	if len(childRows) != 2 {
+		t.Fatalf("expected 2 child rows (1 installed, 1 discovered/available), got %d", len(childRows))
+	}
+	if childRows[0].isAvailable || childRows[0].skill.Name != "InstalledSkill" {
+		t.Errorf("expected first child row to be InstalledSkill, got: %+v", childRows[0])
+	}
+	if !childRows[1].isAvailable || childRows[1].discoveredSkill.Name != "DiscoveredSkill" {
+		t.Errorf("expected second child row to be DiscoveredSkill, got: %+v", childRows[1])
+	}
+
+	// 2. Navigation tests
+	if m.modalSelected != 0 {
+		t.Fatalf("expected modalSelected to start at 0, got %d", m.modalSelected)
+	}
+
+	// Press down
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(appModel)
+	if m.modalSelected != 1 {
+		t.Fatalf("expected modalSelected to be 1 after J keypress (DiscoveredSkill), got %d", m.modalSelected)
+	}
+
+	// Press up
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = updated.(appModel)
+	if m.modalSelected != 0 {
+		t.Fatalf("expected modalSelected to be 0 after K keypress (InstalledSkill), got %d", m.modalSelected)
+	}
+
+	// 3. Action test: Enter on InstalledSkill inside preview pane -> triggers open_skill action (nano is interactive command, so it returns ExecProcess)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("expected a command when hitting enter on installed skill")
+	}
+
+	// Move navigation back to DiscoveredSkill (index 1)
+	m.modalSelected = 1
+	m.syncViewport()
+
+	// 4. Action test: Enter on DiscoveredSkill inside preview pane -> triggers install_skill confirmation
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mInstall := updated.(appModel)
+	if !mInstall.confirming {
+		t.Fatal("expected installing available skill to trigger confirmation")
+	}
+	if mInstall.pendingAction == nil || mInstall.pendingAction.ID != "install_skill" {
+		t.Fatalf("expected pending action to be install_skill, got %+v", mInstall.pendingAction)
+	}
+
+	// 5. Cancel installation confirmation -> should return to preview selection without enabling detailModal
+	updatedCancel, _ := mInstall.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mCancel := updatedCancel.(appModel)
+	if mCancel.confirming || mCancel.pendingAction != nil {
+		t.Fatal("expected escape to clear confirmation state")
+	}
+	if mCancel.modalSource != "owner/repo" || mCancel.modalSelected != 1 {
+		t.Fatalf("expected escape to restore modalSource=owner/repo and modalSelected=1, got modalSource=%q, modalSelected=%d", mCancel.modalSource, mCancel.modalSelected)
+	}
+	if mCancel.detailModal {
+		t.Fatal("expected escape to keep detailModal = false when canceled from preview panel")
+	}
+
+	// 6. Verification of custom key hints in footer
+	m.confirming = false
+	footer := m.footerText(80, m.visibleRows(), m.currentActions())
+	if !strings.Contains(footer, "enter install") {
+		t.Errorf("expected footer to include 'enter install', got %q", footer)
 	}
 }

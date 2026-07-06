@@ -102,6 +102,8 @@ type appModel struct {
 	confirmReturnModalSelected int
 	confirmReturnModalYOffset  int
 	confirmReturnCommands      bool
+	confirmReturnPreview       bool
+	commandsReturnDetailModal  bool
 	updatePlan                 *selfupdate.UpdatePlan
 	updatePlanErr              error
 	appUpdateModal             bool
