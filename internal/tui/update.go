@@ -248,7 +248,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.modalSource != "" {
 					if child, ok := m.currentModalSelectedChild(); ok {
 						if child.isAvailable {
-							for _, a := range actions.ForAvailableSkill(m.modalSource, child.discoveredSkill.Name) {
+							for _, a := range actions.ForAvailableSkillWithResolver(m.modalSource, child.discoveredSkill.Name, m.sourceGroupInstallsGlobally(m.modalSource), actions.ResolveSkillsCommand) {
 								if a.ID != "install_skill" || !a.Available {
 									continue
 								}
@@ -789,6 +789,15 @@ func (m *appModel) markPreviewRendering() {
 	m.previewRenderingGeneration = m.previewGeneration
 }
 
+func (m appModel) activePreviewWidth() int {
+	if m.detailModal && m.modalSource == "" {
+		modalWidth, _ := detailModalDimensions(newAppLayout(m.width, m.height))
+		return max(1, modalWidth-4)
+	}
+	_, rightWidth, _, _ := m.getThreePaneLayout()
+	return max(1, rightWidth-4)
+}
+
 // dispatchPreviewRender checks whether the currently selected skill needs an
 // async glamour markdown render. Returns nil when the preview is already cached
 // or the skill has no preview content.
@@ -811,8 +820,7 @@ func (m appModel) dispatchPreviewRender() tea.Cmd {
 	if m.previewCache == nil {
 		return nil // cache not initialized (bootstrapping)
 	}
-	_, rightWidth, _, _ := m.getThreePaneLayout()
-	previewWidth := max(1, rightWidth-4)
+	previewWidth := m.activePreviewWidth()
 	key := previewCacheKey{markdown: view.Preview, width: previewWidth}
 	if _, ok := m.previewCache[key]; ok {
 		return nil // already cached
@@ -854,7 +862,7 @@ func (m appModel) currentActionsForRows(rows []skillsRow) []actions.CommandPrevi
 		child, ok := m.currentModalSelectedChild()
 		if ok {
 			if child.isAvailable {
-				return actions.ForAvailableSkill(m.modalSource, child.discoveredSkill.Name)
+				return actions.ForAvailableSkillWithResolver(m.modalSource, child.discoveredSkill.Name, m.sourceGroupInstallsGlobally(m.modalSource), actions.ResolveSkillsCommand)
 			}
 			return m.appendEnableDisableActions(actions.ForSkill(child.skill), child.skill)
 		}
@@ -998,6 +1006,19 @@ func (m appModel) currentModalSelectedChild() (modalChildRow, bool) {
 		return modalChildRow{}, false
 	}
 	return childRows[m.modalSelected], true
+}
+
+func (m appModel) sourceGroupInstallsGlobally(groupName string) bool {
+	var hasGlobal, hasProject bool
+	for _, sk := range m.sourceGroupSkills(groupName) {
+		switch sk.Scope {
+		case model.ScopeGlobal:
+			hasGlobal = true
+		case model.ScopeProject:
+			hasProject = true
+		}
+	}
+	return hasGlobal && !hasProject
 }
 
 func preferredUpdateActionID(selectedCount int) string {

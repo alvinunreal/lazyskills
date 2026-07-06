@@ -1507,6 +1507,26 @@ func actionIndex(t *testing.T, m appModel, title string) int {
 	return 0
 }
 
+func actionByID(t *testing.T, previews []actions.CommandPreview, id string) actions.CommandPreview {
+	t.Helper()
+	for _, action := range previews {
+		if action.ID == id {
+			return action
+		}
+	}
+	t.Fatalf("action %q not found in %#v", id, previews)
+	return actions.CommandPreview{}
+}
+
+func argsContain(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestActionSelectionDoesNotResetDetailScroll(t *testing.T) {
 	m := actionTestModel(t.TempDir())
 	for i := 0; i < 40; i++ {
@@ -2921,6 +2941,65 @@ func TestInteractiveSourceDetailModal(t *testing.T) {
 	}
 }
 
+func TestSourceModalAvailableSkillInstallUsesGlobalScopeForGlobalSource(t *testing.T) {
+	m := appModel{
+		modalSource:   "owner/repo",
+		modalSelected: 1,
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{
+					Name:       "InstalledSkill",
+					Scope:      model.ScopeGlobal,
+					GlobalLock: &model.GlobalLockEntry{Source: "owner/repo", Ref: "main"},
+				},
+			},
+		},
+		discovery: map[string]SourceDiscovery{
+			"owner/repo": {
+				Status: DiscoveryReady,
+				Skills: []DiscoveredSkill{{Name: "AvailableSkill", Source: "owner/repo"}},
+			},
+		},
+	}
+
+	install := actionByID(t, m.currentActions(), "install_skill")
+	if !argsContain(install.Exec.Args, "--global") {
+		t.Fatalf("expected global source install to include --global, got %+v", install.Exec.Args)
+	}
+}
+
+func TestSourceModalAvailableSkillInstallKeepsProjectScopeForMixedSource(t *testing.T) {
+	m := appModel{
+		modalSource:   "owner/repo",
+		modalSelected: 2,
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{
+					Name:       "GlobalSkill",
+					Scope:      model.ScopeGlobal,
+					GlobalLock: &model.GlobalLockEntry{Source: "owner/repo", Ref: "main"},
+				},
+				{
+					Name:      "ProjectSkill",
+					Scope:     model.ScopeProject,
+					LocalLock: &model.LocalLockEntry{Source: "owner/repo", Ref: "main"},
+				},
+			},
+		},
+		discovery: map[string]SourceDiscovery{
+			"owner/repo": {
+				Status: DiscoveryReady,
+				Skills: []DiscoveredSkill{{Name: "AvailableSkill", Source: "owner/repo"}},
+			},
+		},
+	}
+
+	install := actionByID(t, m.currentActions(), "install_skill")
+	if argsContain(install.Exec.Args, "--global") {
+		t.Fatalf("expected mixed source install to stay project-scoped, got %+v", install.Exec.Args)
+	}
+}
+
 func TestModalEnterInstallsAvailableSkill(t *testing.T) {
 	m := appModel{width: 120, height: 32, detailModal: true, modalSource: "owner/repo", modalSelected: 1,
 		result: model.ScanResult{Skills: []*model.Skill{
@@ -3474,6 +3553,48 @@ func TestTUIPreviewRenderInFlightSuppression(t *testing.T) {
 	cmd = m.dispatchPreviewRender()
 	if cmd == nil {
 		t.Fatalf("expected dispatchPreviewRender to return a cmd when previewRendering is false")
+	}
+}
+
+func TestTUIPreviewRenderUsesSkillModalWidth(t *testing.T) {
+	m := appModel{
+		width:        120,
+		height:       32,
+		selected:     1,
+		detailModal:  true,
+		modalSource:  "",
+		previewCache: make(map[previewCacheKey][]string),
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{
+					Name:      "TestSkill",
+					Scope:     model.ScopeProject,
+					Preview:   "some preview text",
+					LocalLock: &model.LocalLockEntry{Source: "owner/repo"},
+				},
+			},
+		},
+	}
+
+	cmd := m.dispatchPreviewRender()
+	if cmd == nil {
+		t.Fatal("expected skill detail modal to dispatch preview render on cache miss")
+	}
+
+	msg, ok := cmd().(previewRenderedMsg)
+	if !ok {
+		t.Fatalf("expected previewRenderedMsg, got %T", msg)
+	}
+
+	modalWidth, _ := detailModalDimensions(newAppLayout(m.width, m.height))
+	wantWidth := max(1, modalWidth-4)
+	if msg.width != wantWidth {
+		t.Fatalf("expected modal preview width %d, got %d", wantWidth, msg.width)
+	}
+
+	_, rightWidth, _, _ := m.getThreePaneLayout()
+	if msg.width == max(1, rightWidth-4) {
+		t.Fatalf("expected modal width, got three-pane preview width %d", msg.width)
 	}
 }
 

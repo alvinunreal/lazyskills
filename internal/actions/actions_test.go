@@ -394,6 +394,17 @@ func TestForAvailableSkill(t *testing.T) {
 	if !containsArg(inst.Exec.Args, "owner/repo") || !containsArg(inst.Exec.Args, "test-skill") {
 		t.Errorf("expected source and skill name in args, got %+v", inst.Exec.Args)
 	}
+	if containsArg(inst.Exec.Args, "--global") {
+		t.Errorf("expected project install by default, got %+v", inst.Exec.Args)
+	}
+
+	globalPreviews := ForAvailableSkillWithResolver("owner/repo", "test-skill", true, ResolveSkillsCommand)
+	if len(globalPreviews) != 1 {
+		t.Fatalf("expected 1 global install preview, got %d", len(globalPreviews))
+	}
+	if !containsArg(globalPreviews[0].Exec.Args, "--global") {
+		t.Errorf("expected global install args to include --global, got %+v", globalPreviews[0].Exec.Args)
+	}
 }
 
 func TestForAvailableSkillUnsafeRejection(t *testing.T) {
