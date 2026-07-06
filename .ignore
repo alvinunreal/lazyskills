@@ -8,5 +8,12 @@
 .slim/clonedeps/repos/**/.git/**
 # END oh-my-opencode-slim clonedeps
 
+# BEGIN oh-my-opencode-slim worktrees
+!.slim/
+!.slim/worktrees.json
+!.slim/worktrees/
+!.slim/worktrees/**
+# END oh-my-opencode-slim worktrees
+
 !.slim/deepwork/
 !.slim/deepwork/**
