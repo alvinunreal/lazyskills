@@ -17,6 +17,7 @@ func (m *appModel) syncViewport() {
 		m.viewportSyncFingerprint = m.currentViewportSyncFingerprint()
 		perfLogf("sync selected=%d focus=%d modal=%t source=%q preview_pending=%t duration=%s", m.selected, m.focus, m.detailModal, m.modalSource, m.previewPending, time.Since(start))
 	}()
+	m.syncPreviewSource()
 	layout := newAppLayout(m.width, m.height)
 	if layout.Small {
 		m.viewport.Width = 0
@@ -200,7 +201,14 @@ func (m *appModel) jumpListTop() {
 	case focusMetadata:
 		m.metadataViewport.GotoTop()
 	case focusPreview:
-		m.previewViewport.GotoTop()
+		rows := m.visibleRows()
+		if len(rows) > 0 && m.selected < len(rows) && rows[m.selected].isHeader {
+			m.modalSelected = 0
+			m.syncViewport()
+			m.ensurePreviewSelectionVisible(rows[m.selected].groupName)
+		} else {
+			m.previewViewport.GotoTop()
+		}
 	default:
 		m.selected = 0
 		m.actionResult = nil
@@ -214,7 +222,17 @@ func (m *appModel) jumpListBottom() {
 	case focusMetadata:
 		m.metadataViewport.GotoBottom()
 	case focusPreview:
-		m.previewViewport.GotoBottom()
+		rows := m.visibleRows()
+		if len(rows) > 0 && m.selected < len(rows) && rows[m.selected].isHeader {
+			childRows := m.modalChildRows(rows[m.selected].groupName)
+			if len(childRows) > 0 {
+				m.modalSelected = len(childRows) - 1
+			}
+			m.syncViewport()
+			m.ensurePreviewSelectionVisible(rows[m.selected].groupName)
+		} else {
+			m.previewViewport.GotoBottom()
+		}
 	default:
 		m.selected = len(m.visibleRows()) - 1
 		m.actionResult = nil
@@ -607,4 +625,24 @@ func (m appModel) cachedSkillView(sk *model.Skill) display.SkillView {
 		}
 	}
 	return display.Skill(sk)
+}
+
+func (m *appModel) syncPreviewSource() {
+	if m.detailModal || m.confirming {
+		return
+	}
+	rows := m.visibleRows()
+	if len(rows) > 0 && m.selected >= 0 && m.selected < len(rows) {
+		row := rows[m.selected]
+		if row.isHeader && m.focus == focusPreview {
+			if m.modalSource != row.groupName {
+				m.modalSource = row.groupName
+				m.modalSelected = 0
+			}
+			return
+		}
+	}
+	if !m.commands {
+		m.modalSource = ""
+	}
 }

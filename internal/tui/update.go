@@ -117,6 +117,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.confirmReturnModalSelected = 0
 		m.confirmReturnModalYOffset = 0
 		m.confirmReturnCommands = false
+		m.confirmReturnPreview = false
+		m.commandsReturnDetailModal = false
 		m.actionResult = &msg.result
 		succeeded := msg.result.ExitCode == 0 && msg.result.Err == ""
 		if msg.mutates && succeeded {
@@ -240,6 +242,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Open the full action picker for the selected child.
 				m.detailModal = false
 				m.commands = true
+				m.commandsReturnDetailModal = true
 				m.action = 0
 				m.syncViewport()
 			case "enter":
@@ -366,10 +369,25 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.commands = true
 					m.modalSource = m.confirmReturnModalSource
 					m.modalSelected = m.confirmReturnModalSelected
-					m.viewport.SetYOffset(m.confirmReturnModalYOffset)
-					m.ensureSourceModalSelectionVisible()
+					if m.detailModal {
+						m.viewport.SetYOffset(m.confirmReturnModalYOffset)
+						m.ensureSourceModalSelectionVisible()
+					} else {
+						m.previewViewport.SetYOffset(m.confirmReturnModalYOffset)
+						m.ensurePreviewSelectionVisible(m.modalSource)
+					}
 
 					m.confirmReturnCommands = false
+					m.confirmReturnModalSource = ""
+					m.confirmReturnModalSelected = 0
+					m.confirmReturnModalYOffset = 0
+				} else if m.confirmReturnPreview {
+					m.modalSource = m.confirmReturnModalSource
+					m.modalSelected = m.confirmReturnModalSelected
+					m.previewViewport.SetYOffset(m.confirmReturnModalYOffset)
+					m.ensurePreviewSelectionVisible(m.modalSource)
+
+					m.confirmReturnPreview = false
 					m.confirmReturnModalSource = ""
 					m.confirmReturnModalSelected = 0
 					m.confirmReturnModalYOffset = 0
@@ -430,12 +448,13 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key {
 			case "esc", "c":
 				m.commands = false
-				if m.modalSource != "" {
+				if m.commandsReturnDetailModal {
 					m.detailModal = true
 					m.ensureSourceModalSelectionVisible()
-				} else {
+				} else if m.focus != focusPreview {
 					m.modalSource = ""
 				}
+				m.commandsReturnDetailModal = false
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "up", "k":
@@ -517,8 +536,26 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateError = nil
 			m.syncViewport()
 		case "c":
-			m.commands = !m.commands
-			m.action = 0
+			rows := m.visibleRows()
+			if len(rows) > 0 && m.selected >= 0 && m.selected < len(rows) {
+				row := rows[m.selected]
+				if row.isHeader && m.focus == focusPreview {
+					childRows := m.modalChildRows(row.groupName)
+					if len(childRows) > 0 && m.modalSelected >= 0 && m.modalSelected < len(childRows) {
+						m.commands = !m.commands
+						m.commandsReturnDetailModal = false
+						m.action = 0
+					}
+				} else {
+					m.commands = !m.commands
+					m.commandsReturnDetailModal = false
+					m.action = 0
+				}
+			} else {
+				m.commands = !m.commands
+				m.commandsReturnDetailModal = false
+				m.action = 0
+			}
 		case " ":
 			m.toggleSelectedSkill()
 			m.action = 0
@@ -532,23 +569,54 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(rows) > 0 && m.selected < len(rows) {
 				row := rows[m.selected]
 				if row.isHeader {
-					m.detailModal = true
-					m.modalSource = row.groupName
-					m.modalSelected = 0
-					m.detailsFocused = true
-					m.viewport.GotoTop()
-					m.syncViewport()
-
-					groupName := row.groupName
-					disc, exists := m.discovery[groupName]
-					if !exists || (disc.Status != DiscoveryLoading && disc.Status != DiscoveryReady && disc.Status != DiscoveryFailed) {
-						var cmd tea.Cmd
-						var modelTmp tea.Model
-						modelTmp, cmd = m.startDiscovery(groupName, false)
-						m = modelTmp.(appModel)
+					if m.focus == focusPreview {
+						childRows := m.modalChildRows(row.groupName)
+						if len(childRows) > 0 && m.modalSelected >= 0 && m.modalSelected < len(childRows) {
+							child := childRows[m.modalSelected]
+							if child.isAvailable {
+								for _, a := range actions.ForAvailableSkill(row.groupName, child.discoveredSkill.Name) {
+									if a.ID != "install_skill" || !a.Available {
+										continue
+									}
+									if a.RequiresConfirm {
+										armed := a
+										m.pendingAction = &armed
+										m.confirming = true
+										m.confirmInput = ""
+										m.confirmError = ""
+										m.confirmReturnPreview = true
+										m.confirmReturnModalSource = row.groupName
+										m.confirmReturnModalSelected = m.modalSelected
+										m.confirmReturnModalYOffset = m.previewViewport.YOffset
+										m.modalSource = ""
+										m.syncViewport()
+										return m, nil
+									}
+									return m.executeAction(a)
+								}
+							} else {
+								return m.startSkillActionByID(child.skill, "open_skill")
+							}
+						}
+					} else {
+						m.detailModal = true
+						m.modalSource = row.groupName
+						m.modalSelected = 0
+						m.detailsFocused = true
 						m.viewport.GotoTop()
 						m.syncViewport()
-						return m, cmd
+
+						groupName := row.groupName
+						disc, exists := m.discovery[groupName]
+						if !exists || (disc.Status != DiscoveryLoading && disc.Status != DiscoveryReady && disc.Status != DiscoveryFailed) {
+							var cmd tea.Cmd
+							var modelTmp tea.Model
+							modelTmp, cmd = m.startDiscovery(groupName, false)
+							m = modelTmp.(appModel)
+							m.viewport.GotoTop()
+							m.syncViewport()
+							return m, cmd
+						}
 					}
 				} else {
 					m.detailModal = true
@@ -561,8 +629,21 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "o":
 			rows := m.visibleRows()
-			if len(rows) > 0 && m.selected < len(rows) && !rows[m.selected].isHeader {
-				return m.startCurrentSkillActionByID("open_skill")
+			if len(rows) > 0 && m.selected < len(rows) {
+				row := rows[m.selected]
+				if row.isHeader {
+					if m.focus == focusPreview {
+						childRows := m.modalChildRows(row.groupName)
+						if len(childRows) > 0 && m.modalSelected >= 0 && m.modalSelected < len(childRows) {
+							child := childRows[m.modalSelected]
+							if !child.isAvailable {
+								return m.startSkillActionByID(child.skill, "open_skill")
+							}
+						}
+					}
+				} else {
+					return m.startCurrentSkillActionByID("open_skill")
+				}
 			}
 		case "e":
 			rows := m.visibleRows()
@@ -571,22 +652,46 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "u":
 			rows := m.visibleRows()
-			if len(rows) > 0 && m.selected < len(rows) && !rows[m.selected].isHeader {
-				return m.startActionByID(preferredUpdateActionID(m.selectedCount()))
+			if len(rows) > 0 && m.selected < len(rows) {
+				row := rows[m.selected]
+				if row.isHeader {
+					if m.focus == focusPreview {
+						childRows := m.modalChildRows(row.groupName)
+						if len(childRows) > 0 && m.modalSelected >= 0 && m.modalSelected < len(childRows) {
+							child := childRows[m.modalSelected]
+							if !child.isAvailable {
+								return m.startSkillActionByID(child.skill, "reinstall_update")
+							}
+						}
+					}
+				} else {
+					return m.startActionByID(preferredUpdateActionID(m.selectedCount()))
+				}
 			}
 		case "x":
 			rows := m.visibleRows()
-			if len(rows) > 0 && m.selected < len(rows) && !rows[m.selected].isHeader {
-				return m.startActionByID(preferredRemoveActionID(m.selectedCount()))
+			if len(rows) > 0 && m.selected < len(rows) {
+				row := rows[m.selected]
+				if row.isHeader {
+					if m.focus == focusPreview {
+						childRows := m.modalChildRows(row.groupName)
+						if len(childRows) > 0 && m.modalSelected >= 0 && m.modalSelected < len(childRows) {
+							child := childRows[m.modalSelected]
+							if !child.isAvailable {
+								return m.startSkillActionByID(child.skill, "remove")
+							}
+						}
+					}
+				} else {
+					return m.startActionByID(preferredRemoveActionID(m.selectedCount()))
+				}
 			}
 		case "d":
-			if m.focus == focusSkills {
-				rows := m.visibleRows()
-				if len(rows) > 0 && m.selected >= 0 && m.selected < len(rows) {
-					row := rows[m.selected]
-					if row.isHeader {
-						return m.startDiscovery(row.groupName, true)
-					}
+			rows := m.visibleRows()
+			if len(rows) > 0 && m.selected >= 0 && m.selected < len(rows) {
+				row := rows[m.selected]
+				if row.isHeader && (m.focus == focusSkills || m.focus == focusPreview) {
+					return m.startDiscovery(row.groupName, true)
 				}
 			}
 		case "/":
@@ -675,8 +780,21 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.metadataViewport.LineDown(1)
 				m.clampViewportOffset()
 			} else if m.focus == focusPreview {
-				m.previewViewport.LineDown(1)
-				m.clampViewportOffset()
+				rows := m.visibleRows()
+				if len(rows) > 0 && m.selected >= 0 && m.selected < len(rows) && rows[m.selected].isHeader {
+					childRows := m.modalChildRows(rows[m.selected].groupName)
+					if len(childRows) > 0 {
+						m.modalSelected++
+						if m.modalSelected >= len(childRows) {
+							m.modalSelected = len(childRows) - 1
+						}
+					}
+					m.syncViewport()
+					m.ensurePreviewSelectionVisible(rows[m.selected].groupName)
+				} else {
+					m.previewViewport.LineDown(1)
+					m.clampViewportOffset()
+				}
 			} else {
 				m, postKeyCmd = m.moveSelectionBy(1)
 			}
@@ -685,8 +803,21 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.metadataViewport.LineUp(1)
 				m.clampViewportOffset()
 			} else if m.focus == focusPreview {
-				m.previewViewport.LineUp(1)
-				m.clampViewportOffset()
+				rows := m.visibleRows()
+				if len(rows) > 0 && m.selected >= 0 && m.selected < len(rows) && rows[m.selected].isHeader {
+					childRows := m.modalChildRows(rows[m.selected].groupName)
+					if len(childRows) > 0 {
+						m.modalSelected--
+						if m.modalSelected < 0 {
+							m.modalSelected = 0
+						}
+					}
+					m.syncViewport()
+					m.ensurePreviewSelectionVisible(rows[m.selected].groupName)
+				} else {
+					m.previewViewport.LineUp(1)
+					m.clampViewportOffset()
+				}
 			} else {
 				m, postKeyCmd = m.moveSelectionBy(-1)
 			}
@@ -890,9 +1021,21 @@ func (m appModel) startAction() (tea.Model, tea.Cmd) {
 		m.confirmInput = ""
 		m.confirmError = ""
 		m.actionResult = nil
+		if m.commands {
+			m.confirmReturnCommands = true
+			m.confirmReturnModalSource = m.modalSource
+			m.confirmReturnModalSelected = m.modalSelected
+			if m.detailModal {
+				m.confirmReturnModalYOffset = m.viewport.YOffset
+			} else {
+				m.confirmReturnModalYOffset = m.previewViewport.YOffset
+			}
+		}
+		m.commands = false
 		m.syncViewport()
 		return m, nil
 	}
+	m.commands = false
 	return m.executeAction(action)
 }
 
@@ -903,13 +1046,6 @@ func (m appModel) startActionByID(id string) (tea.Model, tea.Cmd) {
 	for i, action := range m.currentActions() {
 		if action.ID == id {
 			m.action = i
-			if m.commands {
-				m.confirmReturnCommands = true
-				m.confirmReturnModalSource = m.modalSource
-				m.confirmReturnModalSelected = m.modalSelected
-				m.confirmReturnModalYOffset = m.viewport.YOffset
-			}
-			m.commands = false
 			return m.startAction()
 		}
 	}
@@ -920,13 +1056,6 @@ func (m appModel) startToggleAction() (tea.Model, tea.Cmd) {
 	for i, action := range m.currentActions() {
 		if (action.ID == "enable_skill" || action.ID == "disable_skill") && action.Available {
 			m.action = i
-			if m.commands {
-				m.confirmReturnCommands = true
-				m.confirmReturnModalSource = m.modalSource
-				m.confirmReturnModalSelected = m.modalSelected
-				m.confirmReturnModalYOffset = m.viewport.YOffset
-			}
-			m.commands = false
 			return m.startAction()
 		}
 	}
@@ -1037,6 +1166,8 @@ func (m appModel) confirmAction() (tea.Model, tea.Cmd) {
 	m.confirmReturnModalSelected = 0
 	m.confirmReturnModalYOffset = 0
 	m.confirmReturnCommands = false
+	m.confirmReturnPreview = false
+	m.commandsReturnDetailModal = false
 	return m.executeAction(action)
 }
 
