@@ -984,38 +984,30 @@ func (m appModel) confirmAction() (tea.Model, tea.Cmd) {
 }
 
 func confirmationAccepted(input string, action actions.CommandPreview) bool {
-	if requiresExactConfirmation(action) {
-		return input == action.ConfirmValue && action.ConfirmValue != ""
-	}
 	value := strings.TrimSpace(strings.ToLower(input))
+	if action.Dangerous {
+		return value == "y" || value == "yes"
+	}
 	if value == "" {
-		return !action.Dangerous
+		return true
 	}
 	return value == "y" || value == "yes" || input == action.ConfirmValue
 }
 
 func confirmationError(action actions.CommandPreview) string {
-	if requiresExactConfirmation(action) {
-		return fmt.Sprintf("Type %q exactly, or press Esc to cancel.", action.ConfirmValue)
-	}
 	if action.Dangerous {
 		return "Type y or yes to confirm, or press Esc to cancel."
 	}
 	return "Press Enter to continue, or Esc to cancel."
 }
 
-func requiresExactConfirmation(action actions.CommandPreview) bool {
-	return action.Dangerous && action.ID == "bulk_remove"
-}
-
 func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.Cmd) {
+	m.commands = false
 	if action.ID == "source_discover" {
-		m.commands = false
 		m.actionResult = nil
 		return m.startDiscovery(action.ConfirmValue, true)
 	}
 	if action.Exec.Internal == "enable_skill" || action.Exec.Internal == "disable_skill" {
-		m.commands = false
 		m.confirming = false
 		m.confirmInput = ""
 		m.confirmError = ""

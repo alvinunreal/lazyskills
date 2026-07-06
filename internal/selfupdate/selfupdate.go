@@ -302,6 +302,16 @@ func isManualInstallSafe(path string) bool {
 	if strings.HasPrefix(path, "/usr/local/bin/") || strings.HasPrefix(path, "/usr/local/sbin/") {
 		return true
 	}
+	tempDir := filepath.Clean(filepath.ToSlash(os.TempDir()))
+	if strings.HasPrefix(path, tempDir+"/") {
+		return true
+	}
+	if evalTempDir, err := filepath.EvalSymlinks(os.TempDir()); err == nil {
+		evalTempDir = filepath.Clean(filepath.ToSlash(evalTempDir))
+		if strings.HasPrefix(path, evalTempDir+"/") {
+			return true
+		}
+	}
 	if strings.HasPrefix(path, "/tmp/") {
 		return true
 	}
