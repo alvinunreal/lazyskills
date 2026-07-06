@@ -1350,30 +1350,57 @@ func TestSingleRemoveRequiresYesConfirmation(t *testing.T) {
 	}
 }
 
-func TestSingleRemoveAcceptsYesConfirmation(t *testing.T) {
+func TestSingleRemoveRejectsSkillNameConfirmation(t *testing.T) {
+	m := actionTestModel(t.TempDir())
+	m.commands = true
+	m.action = actionIndex(t, m, "Remove selected skill")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	for _, r := range []rune("deploy-skill") {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(appModel)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(appModel)
+	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, "Type y or yes") {
+		t.Fatalf("expected skill name not to confirm deletion, confirming=%v err=%q cmd=%v", m.confirming, m.confirmError, cmd)
+	}
+}
+
+func TestSingleRemoveAcceptsYOrYesConfirmation(t *testing.T) {
+	for _, input := range []string{"y", "yes"} {
+		t.Run(input, func(t *testing.T) {
+			old := runExec
+			runExec = func(spec runner.ExecSpec) runner.Result {
+				return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
+			}
+			t.Cleanup(func() { runExec = old })
+
+			m := actionTestModel(t.TempDir())
+			m.commands = true
+			m.action = actionIndex(t, m, "Remove selected skill")
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			m = updated.(appModel)
+			for _, r := range []rune(input) {
+				updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+				m = updated.(appModel)
+			}
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			m = updated.(appModel)
+			if cmd == nil || !m.running {
+				t.Fatalf("expected %q to run single remove, running=%v cmd=%v", input, m.running, cmd)
+			}
+		})
+	}
+}
+
+func TestBulkRemoveAcceptsYesConfirmation(t *testing.T) {
 	old := runExec
 	runExec = func(spec runner.ExecSpec) runner.Result {
 		return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
 	}
 	t.Cleanup(func() { runExec = old })
 
-	m := actionTestModel(t.TempDir())
-	m.commands = true
-	m.action = actionIndex(t, m, "Remove selected skill")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(appModel)
-	for _, r := range []rune("yes") {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = updated.(appModel)
-	}
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(appModel)
-	if cmd == nil || !m.running {
-		t.Fatalf("expected yes to run single remove, running=%v cmd=%v", m.running, cmd)
-	}
-}
-
-func TestBulkRemoveRequiresExactPhrase(t *testing.T) {
 	m := bulkActionTestModel(t.TempDir())
 	m.selectedKeys = map[string]bool{skillKey(m.result.Skills[0]): true, skillKey(m.result.Skills[1]): true}
 	m.commands = true
@@ -1386,8 +1413,8 @@ func TestBulkRemoveRequiresExactPhrase(t *testing.T) {
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(appModel)
-	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, `Type "remove 2 skills" exactly`) {
-		t.Fatalf("expected bulk remove to require exact phrase, confirming=%v err=%q cmd=%v", m.confirming, m.confirmError, cmd)
+	if cmd == nil || !m.running || m.commands {
+		t.Fatalf("expected bulk remove to accept yes and close actions, running=%v commands=%v cmd=%v", m.running, m.commands, cmd)
 	}
 }
 
@@ -1447,8 +1474,8 @@ func TestConfirmationOverlayCopyMatchesRisk(t *testing.T) {
 	m.action = actionIndex(t, m, "Remove 2 selected skills")
 	m.confirming = true
 	bulkOut := m.confirmationOverlay(appLayout{Width: 120, Height: 32})
-	if !strings.Contains(bulkOut, `remove 2 skills`) || !strings.Contains(bulkOut, `to confirm`) || strings.Contains(bulkOut, "y / yes") {
-		t.Fatalf("expected bulk-remove exact-phrase copy, got %q", bulkOut)
+	if !strings.Contains(bulkOut, `Remove 2 selected skills`) || !strings.Contains(bulkOut, `Type y or yes to confirm`) {
+		t.Fatalf("expected bulk-remove y/yes copy, got %q", bulkOut)
 	}
 }
 
@@ -2651,6 +2678,81 @@ func TestRemoteDiscoveryRawFallbackRefBypass(t *testing.T) {
 	}
 }
 
+func TestDiscoveryInProgressNoop(t *testing.T) {
+	// Set up gitClone mock
+	oldGitClone := gitClone
+	defer func() { gitClone = oldGitClone }()
+	calledCloneCount := 0
+	gitClone = func(url, ref, tempDir string) error {
+		calledCloneCount++
+		return nil
+	}
+
+	m := appModel{
+		width: 120, height: 32, selected: 0,
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{
+					Name:      "Existing",
+					Scope:     model.ScopeProject,
+					LocalLock: &model.LocalLockEntry{Source: "owner/repo1", Ref: "main"},
+				},
+				{
+					Name:      "Existing2",
+					Scope:     model.ScopeProject,
+					LocalLock: &model.LocalLockEntry{Source: "owner/repo2", Ref: "main"},
+				},
+			},
+		},
+	}
+	m.discovery = make(map[string]SourceDiscovery)
+
+	// Set owner/repo1 to DiscoveryLoading
+	m.discovery["owner/repo1"] = SourceDiscovery{
+		Status: DiscoveryLoading,
+	}
+
+	// Call startDiscovery for owner/repo1 (same group is loading)
+	updated, cmd := m.startDiscovery("owner/repo1", true)
+	if cmd != nil {
+		t.Fatal("expected discovery cmd to be nil when the same group is already loading")
+	}
+	next := updated.(appModel)
+	disc := next.discovery["owner/repo1"]
+	if disc.Status != DiscoveryLoading {
+		t.Fatalf("expected status to remain DiscoveryLoading, got %s", disc.Status)
+	}
+	if disc.Error != "" {
+		t.Fatalf("expected empty error, got %s", disc.Error)
+	}
+	if calledCloneCount != 0 {
+		t.Fatalf("expected git clone not to be called, but called %d times", calledCloneCount)
+	}
+
+	// Call startDiscovery for owner/repo2 (different group, not loading)
+	_, cmdDifferent := m.startDiscovery("owner/repo2", true)
+	if cmdDifferent == nil {
+		t.Fatal("expected discovery cmd to start for a different group")
+	}
+
+	// Verify that if status of owner/repo1 is no longer loading (e.g. DiscoveryFailed), it can be rescanned when force is requested
+	m.discovery["owner/repo1"] = SourceDiscovery{
+		Status: DiscoveryFailed,
+		Error:  "some legacy error",
+	}
+	updatedRescan, cmdRescan := m.startDiscovery("owner/repo1", true)
+	if cmdRescan == nil {
+		t.Fatal("expected discovery cmd to start for a non-loading status when force is requested")
+	}
+	nextRescan := updatedRescan.(appModel)
+	if nextRescan.discovery["owner/repo1"].Status != DiscoveryLoading {
+		t.Fatalf("expected status to transition back to DiscoveryLoading, got %s", nextRescan.discovery["owner/repo1"].Status)
+	}
+	if nextRescan.discovery["owner/repo1"].Error != "" {
+		t.Fatalf("expected error block to be cleared/empty on rescan, got %s", nextRescan.discovery["owner/repo1"].Error)
+	}
+}
+
 func TestInteractiveSourceDetailModal(t *testing.T) {
 	t.Setenv("EDITOR", "nano")
 
@@ -2842,10 +2944,136 @@ func TestModalEnterInstallsAvailableSkill(t *testing.T) {
 	if next.pendingAction.ID != "install_skill" {
 		t.Fatalf("expected pending install_skill action, got %q", next.pendingAction.ID)
 	}
-	// Cancel clears the pending action.
+	// Cancel clears the pending action and restores the state of the detail modal.
 	updated, _ = next.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if c := updated.(appModel); c.confirming || c.pendingAction != nil {
+	c := updated.(appModel)
+	if c.confirming || c.pendingAction != nil {
 		t.Fatalf("expected esc to clear confirm, confirming=%v pending=%v", c.confirming, c.pendingAction)
+	}
+	if !c.detailModal {
+		t.Fatal("expected esc to restore detailModal=true")
+	}
+	if c.modalSource != "owner/repo" {
+		t.Fatalf("expected esc to restore modalSource=owner/repo, got %q", c.modalSource)
+	}
+	if c.modalSelected != 1 {
+		t.Fatalf("expected esc to restore modalSelected=1, got %d", c.modalSelected)
+	}
+}
+
+func TestModalEnterInstallsAvailableSkillSuccessPath(t *testing.T) {
+	// Mock gitClone to do nothing
+	oldGit := gitClone
+	gitClone = func(url, ref, dir string) error { return nil }
+	t.Cleanup(func() { gitClone = oldGit })
+
+	m := appModel{width: 120, height: 32, detailModal: true, modalSource: "owner/repo", modalSelected: 1,
+		result: model.ScanResult{Skills: []*model.Skill{
+			{Name: "Installed", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+		}}}
+	m.discovery = map[string]SourceDiscovery{
+		"owner/repo": {Status: DiscoveryReady, Skills: []DiscoveredSkill{
+			{Name: "Installed", Source: "owner/repo"},
+			{Name: "Available", Source: "owner/repo"},
+		}},
+	}
+
+	// Press Enter to go from detail modal to confirmation
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next := updated.(appModel)
+	if !next.confirming {
+		t.Fatal("expected confirmation to be active")
+	}
+
+	// Press Enter on confirmation screen to execute and succeed
+	finalModel, cmd := next.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	f := finalModel.(appModel)
+	if f.confirming || f.pendingAction != nil {
+		t.Fatal("expected confirmation and pending action to be cleared")
+	}
+	if f.confirmReturnDetailModal {
+		t.Fatal("expected confirmReturnDetailModal to be cleared on success")
+	}
+	if cmd == nil {
+		t.Fatal("expected interactive cmd to be returned")
+	}
+	if !f.running {
+		t.Fatal("expected f.running to be true")
+	}
+}
+
+func TestModalCommandsMenuExitAndCancels(t *testing.T) {
+	m := appModel{width: 120, height: 32, detailModal: true, modalSource: "owner/repo", modalSelected: 0,
+		result: model.ScanResult{Skills: []*model.Skill{
+			{Name: "Installed", Scope: model.ScopeProject, LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+		}}}
+	m.discovery = map[string]SourceDiscovery{
+		"owner/repo": {Status: DiscoveryReady, Skills: []DiscoveredSkill{
+			{Name: "Installed", Source: "owner/repo"},
+		}},
+	}
+
+	// 1. Press 'c' to open commands (action picker) from detail modal
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	next := updated.(appModel)
+	if next.detailModal {
+		t.Fatal("expected detailModal = false when opening commands")
+	}
+	if !next.commands {
+		t.Fatal("expected commands = true when opening action picker")
+	}
+	if next.modalSource != "owner/repo" {
+		t.Fatalf("expected modalSource preserve, got %q", next.modalSource)
+	}
+
+	// 2. Cancel commands menu with Esc -> should return to detailModal=true
+	canceledCommands, _ := next.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	cc := canceledCommands.(appModel)
+	if !cc.detailModal {
+		t.Fatal("expected detailModal = true after canceling commands menu")
+	}
+	if cc.commands {
+		t.Fatal("expected commands = false after canceling commands menu")
+	}
+	if cc.modalSource != "owner/repo" {
+		t.Fatalf("expected modalSource restore, got %q", cc.modalSource)
+	}
+
+	// 3. Open commands menu again
+	updated, _ = cc.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	next = updated.(appModel)
+
+	// 4. Trigger "reinstall_update" using hotkey 'u' inside commands menu (which requires confirm)
+	updated, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	confirmState := updated.(appModel)
+	if !confirmState.confirming {
+		t.Fatal("expected hotkey 'u' in commands to arm confirmation")
+	}
+	if confirmState.commands {
+		t.Fatal("expected commands = false when confirmation is active")
+	}
+
+	// 5. Cancel confirmation with Esc -> should return to commands menu
+	canceledConfirm, _ := confirmState.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	cc2 := canceledConfirm.(appModel)
+	if cc2.confirming {
+		t.Fatal("expected confirming = false after cancel")
+	}
+	if !cc2.commands {
+		t.Fatal("expected commands = true (returned to action picker)")
+	}
+
+	// 6. Cancel commands menu with Esc -> should return to detailModal
+	finalModel, _ := cc2.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	fm := finalModel.(appModel)
+	if !fm.detailModal {
+		t.Fatal("expected final model to return to detailModal = true")
+	}
+	if fm.commands {
+		t.Fatal("expected commands = false")
+	}
+	if fm.modalSource != "owner/repo" {
+		t.Fatalf("expected modalSource = owner/repo, got %q", fm.modalSource)
 	}
 }
 

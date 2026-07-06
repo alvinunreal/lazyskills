@@ -259,7 +259,7 @@ func TestApplyAndChecksumMismatch(t *testing.T) {
 	mockRel := &GitHubRelease{
 		TagName: "v1.1.0",
 	}
-	// We will determine our asset based on runtime OS/Arch
+	// Match Apply's runtime-specific release asset naming.
 	osName := strings.Title(runtime.GOOS)
 	archName := runtime.GOARCH
 	if archName == "amd64" {

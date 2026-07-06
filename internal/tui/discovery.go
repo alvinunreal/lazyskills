@@ -248,6 +248,12 @@ func (m appModel) isSourceDiscoverable(group string) (bool, string) {
 }
 
 func (m appModel) startDiscovery(groupName string, force bool) (tea.Model, tea.Cmd) {
+	if m.discovery != nil {
+		if disc, exists := m.discovery[groupName]; exists && disc.Status == DiscoveryLoading {
+			return m, nil
+		}
+	}
+
 	if m.discovery == nil {
 		m.discovery = make(map[string]SourceDiscovery)
 	}

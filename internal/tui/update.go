@@ -112,6 +112,11 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.confirming = false
 		m.confirmInput = ""
 		m.modalSource = ""
+		m.confirmReturnDetailModal = false
+		m.confirmReturnModalSource = ""
+		m.confirmReturnModalSelected = 0
+		m.confirmReturnModalYOffset = 0
+		m.confirmReturnCommands = false
 		m.actionResult = &msg.result
 		succeeded := msg.result.ExitCode == 0 && msg.result.Err == ""
 		if msg.mutates && succeeded {
@@ -247,17 +252,23 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								if a.ID != "install_skill" || !a.Available {
 									continue
 								}
-								m.detailModal = false
-								m.modalSource = ""
 								if a.RequiresConfirm {
 									armed := a
 									m.pendingAction = &armed
 									m.confirming = true
 									m.confirmInput = ""
 									m.confirmError = ""
+									m.confirmReturnDetailModal = true
+									m.confirmReturnModalSource = m.modalSource
+									m.confirmReturnModalSelected = m.modalSelected
+									m.confirmReturnModalYOffset = m.viewport.YOffset
+									m.detailModal = false
+									m.modalSource = ""
 									m.syncViewport()
 									return m, nil
 								}
+								m.detailModal = false
+								m.modalSource = ""
 								return m.executeAction(a)
 							}
 						} else {
@@ -339,6 +350,30 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirmInput = ""
 				m.confirmError = ""
 				m.pendingAction = nil
+				if m.confirmReturnDetailModal {
+					m.detailModal = true
+					m.modalSource = m.confirmReturnModalSource
+					m.modalSelected = m.confirmReturnModalSelected
+					m.viewport.SetYOffset(m.confirmReturnModalYOffset)
+					m.ensureSourceModalSelectionVisible()
+
+					m.confirmReturnDetailModal = false
+					m.confirmReturnModalSource = ""
+					m.confirmReturnModalSelected = 0
+					m.confirmReturnModalYOffset = 0
+					m.confirmReturnCommands = false
+				} else if m.confirmReturnCommands {
+					m.commands = true
+					m.modalSource = m.confirmReturnModalSource
+					m.modalSelected = m.confirmReturnModalSelected
+					m.viewport.SetYOffset(m.confirmReturnModalYOffset)
+					m.ensureSourceModalSelectionVisible()
+
+					m.confirmReturnCommands = false
+					m.confirmReturnModalSource = ""
+					m.confirmReturnModalSelected = 0
+					m.confirmReturnModalYOffset = 0
+				}
 			case "pgdown", "ctrl+d", "pgup", "ctrl+u":
 				var cmd tea.Cmd
 				m.viewport, cmd = m.viewport.Update(msg)
@@ -395,7 +430,12 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key {
 			case "esc", "c":
 				m.commands = false
-				m.modalSource = ""
+				if m.modalSource != "" {
+					m.detailModal = true
+					m.ensureSourceModalSelectionVisible()
+				} else {
+					m.modalSource = ""
+				}
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "up", "k":
@@ -863,6 +903,12 @@ func (m appModel) startActionByID(id string) (tea.Model, tea.Cmd) {
 	for i, action := range m.currentActions() {
 		if action.ID == id {
 			m.action = i
+			if m.commands {
+				m.confirmReturnCommands = true
+				m.confirmReturnModalSource = m.modalSource
+				m.confirmReturnModalSelected = m.modalSelected
+				m.confirmReturnModalYOffset = m.viewport.YOffset
+			}
 			m.commands = false
 			return m.startAction()
 		}
@@ -874,6 +920,12 @@ func (m appModel) startToggleAction() (tea.Model, tea.Cmd) {
 	for i, action := range m.currentActions() {
 		if (action.ID == "enable_skill" || action.ID == "disable_skill") && action.Available {
 			m.action = i
+			if m.commands {
+				m.confirmReturnCommands = true
+				m.confirmReturnModalSource = m.modalSource
+				m.confirmReturnModalSelected = m.modalSelected
+				m.confirmReturnModalYOffset = m.viewport.YOffset
+			}
 			m.commands = false
 			return m.startAction()
 		}
@@ -980,42 +1032,39 @@ func (m appModel) confirmAction() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.pendingAction = nil
+	m.confirmReturnDetailModal = false
+	m.confirmReturnModalSource = ""
+	m.confirmReturnModalSelected = 0
+	m.confirmReturnModalYOffset = 0
+	m.confirmReturnCommands = false
 	return m.executeAction(action)
 }
 
 func confirmationAccepted(input string, action actions.CommandPreview) bool {
-	if requiresExactConfirmation(action) {
-		return input == action.ConfirmValue && action.ConfirmValue != ""
-	}
 	value := strings.TrimSpace(strings.ToLower(input))
+	if action.Dangerous {
+		return value == "y" || value == "yes"
+	}
 	if value == "" {
-		return !action.Dangerous
+		return true
 	}
 	return value == "y" || value == "yes" || input == action.ConfirmValue
 }
 
 func confirmationError(action actions.CommandPreview) string {
-	if requiresExactConfirmation(action) {
-		return fmt.Sprintf("Type %q exactly, or press Esc to cancel.", action.ConfirmValue)
-	}
 	if action.Dangerous {
 		return "Type y or yes to confirm, or press Esc to cancel."
 	}
 	return "Press Enter to continue, or Esc to cancel."
 }
 
-func requiresExactConfirmation(action actions.CommandPreview) bool {
-	return action.Dangerous && action.ID == "bulk_remove"
-}
-
 func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.Cmd) {
+	m.commands = false
 	if action.ID == "source_discover" {
-		m.commands = false
 		m.actionResult = nil
 		return m.startDiscovery(action.ConfirmValue, true)
 	}
 	if action.Exec.Internal == "enable_skill" || action.Exec.Internal == "disable_skill" {
-		m.commands = false
 		m.confirming = false
 		m.confirmInput = ""
 		m.confirmError = ""

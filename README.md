@@ -43,7 +43,7 @@ LazySkills is a blazing-fast terminal UI for managing agent skills. It gives you
 Recommended for macOS and Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alvinunreal/lazyskills/main/scripts/install.sh | sh
+curl -fsSL https://lazyskills.sh/install | sh
 ```
 
 Or use Homebrew:
@@ -55,7 +55,7 @@ brew install --cask alvinunreal/tap/lazyskills
 Windows:
 
 ```powershell
-irm https://raw.githubusercontent.com/alvinunreal/lazyskills/main/scripts/install.ps1 | iex
+irm https://lazyskills.sh/install.ps1 | iex
 ```
 
 Go users:

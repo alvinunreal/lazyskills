@@ -97,6 +97,11 @@ type appModel struct {
 	modalSource                string
 	pendingG                   bool                    // saw a lone "g"; a second "g" jumps to top
 	pendingAction              *actions.CommandPreview // action awaiting confirm (decoupled from selection)
+	confirmReturnDetailModal   bool
+	confirmReturnModalSource   string
+	confirmReturnModalSelected int
+	confirmReturnModalYOffset  int
+	confirmReturnCommands      bool
 	updatePlan                 *selfupdate.UpdatePlan
 	updatePlanErr              error
 	appUpdateModal             bool

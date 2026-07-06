@@ -1307,7 +1307,7 @@ func (m appModel) footerText(width int, rows []skillsRow, actions []actions.Comm
 	if m.running {
 		text = "Working…"
 	} else if m.confirming {
-		text = "type y/yes/phrase · enter confirm · esc cancel"
+		text = "type y/yes · enter confirm · esc cancel"
 	} else if m.searching {
 		text = "type search · enter apply · esc cancel · backspace edit"
 	} else if m.detailModal {
@@ -1564,23 +1564,17 @@ func (m *appModel) ensureSourceModalSelectionVisible() {
 
 func (m appModel) confirmationOverlay(layout appLayout) string {
 	title := "Confirm action"
-	phrase := ""
 	command := ""
 	dangerous := false
-	exact := false
 	if m.pendingAction != nil {
 		title = compat.SanitizeMetadata(m.pendingAction.Title)
-		phrase = compat.SanitizeMetadata(m.pendingAction.ConfirmValue)
 		command = compat.SanitizeMetadata(m.pendingAction.Command)
 		dangerous = m.pendingAction.Dangerous
-		exact = requiresExactConfirmation(*m.pendingAction)
 	} else if acts := m.currentActions(); len(acts) > 0 && m.action < len(acts) {
 		action := acts[m.action]
 		title = compat.SanitizeMetadata(action.Title)
-		phrase = compat.SanitizeMetadata(action.ConfirmValue)
 		command = compat.SanitizeMetadata(action.Command)
 		dangerous = action.Dangerous
-		exact = requiresExactConfirmation(action)
 	}
 	headerStyle := sectionHeaderStyle
 	borderColor := actionBorderColor
@@ -1591,10 +1585,6 @@ func (m appModel) confirmationOverlay(layout appLayout) string {
 		borderColor = lipgloss.Color("203")
 		placeholder = "y / yes"
 		instruction = "Type y or yes to confirm, or Esc to cancel."
-		if exact {
-			placeholder = phrase
-			instruction = fmt.Sprintf("Type %q to confirm, or Esc to cancel.", phrase)
-		}
 	}
 	lines := []string{
 		headerStyle.Render(title),
