@@ -3764,3 +3764,105 @@ func TestSourcePreviewNavigationAndActions(t *testing.T) {
 		t.Errorf("expected footer to include 'enter install', got %q", footer)
 	}
 }
+
+func TestDetailModalPreviewRenderingCycle(t *testing.T) {
+	cwd := t.TempDir()
+	m := appModel{
+		cwd:          cwd,
+		width:        120,
+		height:       32,
+		selected:     1,
+		previewCache: make(map[previewCacheKey][]string),
+	}
+	m.result = model.ScanResult{
+		Skills: []*model.Skill{
+			{
+				Name:        "Test Skill",
+				Description: "A skill with preview content",
+				Scope:       model.ScopeProject,
+				Preview:     "## Help Preview\nThis is a test preview.",
+				LocalLock:   &model.LocalLockEntry{Source: "owner/repo"},
+			},
+		},
+	}
+	m.rebuildSkillViews()
+	m.clampSelection()
+	m.syncViewport()
+
+	cmd := m.dispatchPreviewRender()
+	if cmd == nil {
+		t.Fatal("expected dispatchPreviewRender to return a rendering command in normal view")
+	}
+
+	msg := cmd()
+	previewMsg, ok := msg.(previewRenderedMsg)
+	if !ok {
+		t.Fatalf("expected previewRenderedMsg, got %T", msg)
+	}
+
+	_, rightWidth, _, _ := m.getThreePaneLayout()
+	expectedSplitWidth := rightWidth - 4
+	if previewMsg.width != expectedSplitWidth {
+		t.Fatalf("expected normal split width %d, got %d", expectedSplitWidth, previewMsg.width)
+	}
+
+	m.previewRendering = true
+	m.previewRenderingGeneration = m.previewGeneration
+	updatedModel, _ := m.Update(previewMsg)
+	m = updatedModel.(appModel)
+
+	if !m.hasRenderedMarkdownPreview("## Help Preview\nThis is a test preview.", expectedSplitWidth) {
+		t.Fatal("expected cache to have split width preview")
+	}
+
+	// Press Enter to open the detail modal
+	updatedModal, modalCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updatedModal.(appModel)
+	if !m.detailModal {
+		t.Fatal("expected detailModal to be true after pressing enter")
+	}
+
+	if modalCmd == nil {
+		t.Fatal("expected modalCmd to be non-nil because modal width is a cache miss")
+	}
+
+	modalMsgMsg := modalCmd()
+	modalMsg, ok := modalMsgMsg.(previewRenderedMsg)
+	if !ok {
+		t.Fatalf("expected previewRenderedMsg, got %T", modalMsgMsg)
+	}
+
+	layout := newAppLayout(m.width, m.height)
+	modalWidth, _ := detailModalDimensions(layout)
+	expectedModalWidth := modalWidth - 4
+	if modalMsg.width != expectedModalWidth {
+		t.Fatalf("expected modal width %d, got %d", expectedModalWidth, modalMsg.width)
+	}
+
+	m.previewRendering = true
+	m.previewRenderingGeneration = m.previewGeneration
+	updatedFinished, _ := m.Update(modalMsg)
+	m = updatedFinished.(appModel)
+
+	if m.previewRendering {
+		t.Fatal("expected previewRendering to be false after modal preview rendering finished")
+	}
+
+	if !m.hasRenderedMarkdownPreview("## Help Preview\nThis is a test preview.", expectedModalWidth) {
+		t.Fatal("expected cache to have modal width preview")
+	}
+
+	// Verify both cache widths exist
+	if len(m.previewCache) != 2 {
+		t.Fatalf("expected cache to have exactly 2 entries (split mode and modal mode), got %d", len(m.previewCache))
+	}
+
+	// Check that viewport content contains the rendered preview content
+	viewContent := compat.StripTerminalEscapes(m.viewport.View())
+	if strings.Contains(viewContent, "Rendering preview…") {
+		t.Fatal("expected viewport to NOT contain 'Rendering preview…' placeholder after rendering finished")
+	}
+	if !strings.Contains(viewContent, "Help Preview") {
+		t.Fatalf("expected viewport to contain preview header 'Help Preview', got view:\n%s", viewContent)
+	}
+}
