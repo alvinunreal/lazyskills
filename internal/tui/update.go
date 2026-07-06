@@ -942,8 +942,15 @@ func (m appModel) dispatchPreviewRender() tea.Cmd {
 	if m.previewCache == nil {
 		return nil // cache not initialized (bootstrapping)
 	}
-	_, rightWidth, _, _ := m.getThreePaneLayout()
-	previewWidth := max(1, rightWidth-4)
+	var previewWidth int
+	if m.detailModal {
+		layout := newAppLayout(m.width, m.height)
+		modalWidth, _ := detailModalDimensions(layout)
+		previewWidth = max(1, modalWidth-4)
+	} else {
+		_, rightWidth, _, _ := m.getThreePaneLayout()
+		previewWidth = max(1, rightWidth-4)
+	}
 	key := previewCacheKey{markdown: view.Preview, width: previewWidth}
 	if _, ok := m.previewCache[key]; ok {
 		return nil // already cached
