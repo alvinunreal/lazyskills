@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -184,5 +185,60 @@ func TestTUIAppUpdateModalStates(t *testing.T) {
 	viewOut = m.View()
 	if !strings.Contains(viewOut, "Update check failed") || !strings.Contains(viewOut, "sample query error") {
 		t.Errorf("expected error message to be surfaced, got: %s", viewOut)
+	}
+}
+
+func TestTUIAppUpdateModalFailureGuidance(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	m := newModel("")
+	m.width = 100
+	m.height = 30
+	m.updatePlan = &selfupdate.UpdatePlan{
+		Current:    "v1.0.0",
+		Latest:     "v1.1.0",
+		Status:     selfupdate.StatusAvailable,
+		Channel:    "manual",
+		CanExecute: true,
+	}
+
+	// 1. Simulate update start
+	modelTmp, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("U")})
+	m = modelTmp.(appModel)
+
+	// Simulate enter to start, then failure
+	modelTmp, _ = m.Update(appUpdateResultMsg{err: fmt.Errorf("network disconnect")})
+	m = modelTmp.(appModel)
+
+	if !m.appUpdateModal {
+		t.Fatal("expected modal to remain open on failure")
+	}
+	if m.updateError == nil || m.updateError.Error() != "network disconnect" {
+		t.Errorf("expected updateError to be set to 'network disconnect', got: %v", m.updateError)
+	}
+
+	viewOut := m.View()
+	if !strings.Contains(viewOut, "Update failed") {
+		t.Errorf("expected Update failed heading, got: %s", viewOut)
+	}
+	if !strings.Contains(viewOut, "network disconnect") {
+		t.Errorf("expected error message in view, got: %s", viewOut)
+	}
+
+	// Since we are running the test on the current runtime.GOOS, we check the expected recovery command.
+	_, expectedCmd := selfupdate.RecoveryAdvice("manual", runtime.GOOS)
+	if !strings.Contains(viewOut, expectedCmd) {
+		t.Errorf("expected recovery command %q in view, got: %s", expectedCmd, viewOut)
+	}
+
+	// 2. Test with a different channel: package manager "brew"
+	m.updateError = nil
+	m.updatePlan.Channel = "brew"
+	modelTmp, _ = m.Update(appUpdateResultMsg{err: fmt.Errorf("brew failure")})
+	m = modelTmp.(appModel)
+
+	viewOutBrew := m.View()
+	_, expectedBrewCmd := selfupdate.RecoveryAdvice("brew", runtime.GOOS)
+	if !strings.Contains(viewOutBrew, expectedBrewCmd) {
+		t.Errorf("expected brew recovery command %q in view, got: %s", expectedBrewCmd, viewOutBrew)
 	}
 }

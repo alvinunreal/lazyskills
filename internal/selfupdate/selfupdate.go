@@ -658,3 +658,27 @@ func extractBinaryFromTarGz(tarGzBytes []byte, binaryName string) ([]byte, error
 	}
 	return nil, fmt.Errorf("binary %q not found in archive", binaryName)
 }
+
+// RecoveryAdvice returns a suggested manual recovery instruction and command (or download URL)
+// based on the installation channel and OS.
+func RecoveryAdvice(channel string, goos string) (instruction string, command string) {
+	switch channel {
+	case "brew":
+		return "To upgrade using Homebrew, run:", "brew upgrade --cask alvinunreal/tap/lazyskills"
+	case "go", "dev":
+		return "To rebuild from source, run:", "go install github.com/alvinunreal/lazyskills/cmd/lazyskills@latest"
+	case "scoop":
+		return "To upgrade using Scoop, run:", "scoop update lazyskills"
+	case "winget":
+		return "To upgrade using WinGet, run:", "winget upgrade --id alvinunreal.lazyskills"
+	case "deb":
+		return "To upgrade via apt, run:", "sudo apt update && sudo apt install --only-upgrade lazyskills"
+	case "rpm":
+		return "To upgrade via dnf, run:", "sudo dnf upgrade lazyskills"
+	default:
+		if goos == "windows" {
+			return "To reinstall, run in PowerShell:", "irm https://lazyskills.sh/install.ps1 | iex"
+		}
+		return "To reinstall, run:", "curl -fsSL https://lazyskills.sh/install | sh"
+	}
+}

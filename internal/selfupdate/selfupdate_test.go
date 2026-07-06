@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -228,7 +229,11 @@ func TestApplyAndChecksumMismatch(t *testing.T) {
 	correctHashStr := fmt.Sprintf("%x", correctHash)
 
 	// Write temp target executable paths
-	tmpDir, err := os.MkdirTemp("", "lazyskills-test-*")
+	var parentDir string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		parentDir = home
+	}
+	tmpDir, err := os.MkdirTemp(parentDir, ".lazyskills-test-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp failed: %v", err)
 	}
@@ -255,8 +260,11 @@ func TestApplyAndChecksumMismatch(t *testing.T) {
 		TagName: "v1.1.0",
 	}
 	// We will determine our asset based on runtime OS/Arch
-	osName := "Linux"
-	archName := "x86_64"
+	osName := strings.Title(runtime.GOOS)
+	archName := runtime.GOARCH
+	if archName == "amd64" {
+		archName = "x86_64"
+	}
 	mockRel.Assets = append(mockRel.Assets, struct {
 		Name               string `json:"name"`
 		BrowserDownloadURL string `json:"browser_download_url"`
@@ -383,5 +391,38 @@ func TestApplyAndChecksumMismatch(t *testing.T) {
 		}
 	} else {
 		t.Logf("skipping /var/tmp symlink safety test because /var/tmp is not writeable or available: %v", err)
+	}
+}
+
+func TestRecoveryAdvice(t *testing.T) {
+	tests := []struct {
+		channel  string
+		goos     string
+		wantInst string
+		wantCmd  string
+	}{
+		{"brew", "darwin", "To upgrade using Homebrew, run:", "brew upgrade --cask alvinunreal/tap/lazyskills"},
+		{"brew", "linux", "To upgrade using Homebrew, run:", "brew upgrade --cask alvinunreal/tap/lazyskills"},
+		{"scoop", "windows", "To upgrade using Scoop, run:", "scoop update lazyskills"},
+		{"winget", "windows", "To upgrade using WinGet, run:", "winget upgrade --id alvinunreal.lazyskills"},
+		{"deb", "linux", "To upgrade via apt, run:", "sudo apt update && sudo apt install --only-upgrade lazyskills"},
+		{"rpm", "linux", "To upgrade via dnf, run:", "sudo dnf upgrade lazyskills"},
+		{"go", "linux", "To rebuild from source, run:", "go install github.com/alvinunreal/lazyskills/cmd/lazyskills@latest"},
+		{"dev", "linux", "To rebuild from source, run:", "go install github.com/alvinunreal/lazyskills/cmd/lazyskills@latest"},
+		{"manual", "darwin", "To reinstall, run:", "curl -fsSL https://lazyskills.sh/install | sh"},
+		{"manual", "linux", "To reinstall, run:", "curl -fsSL https://lazyskills.sh/install | sh"},
+		{"manual", "windows", "To reinstall, run in PowerShell:", "irm https://lazyskills.sh/install.ps1 | iex"},
+		{"windows", "windows", "To reinstall, run in PowerShell:", "irm https://lazyskills.sh/install.ps1 | iex"},
+		{"unknown", "linux", "To reinstall, run:", "curl -fsSL https://lazyskills.sh/install | sh"},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s-%s", tt.channel, tt.goos), func(t *testing.T) {
+			gotInst, gotCmd := RecoveryAdvice(tt.channel, tt.goos)
+			if gotInst != tt.wantInst || gotCmd != tt.wantCmd {
+				t.Errorf("RecoveryAdvice(%q, %q) = (%q, %q); want (%q, %q)",
+					tt.channel, tt.goos, gotInst, gotCmd, tt.wantInst, tt.wantCmd)
+			}
+		})
 	}
 }

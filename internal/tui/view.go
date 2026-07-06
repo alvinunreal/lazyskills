@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -1670,6 +1671,18 @@ func (m appModel) appUpdateModalOverlay(layout appLayout) string {
 			sections = append(sections, errorStyle.Render("✗ Update failed:"))
 			sections = append(sections, wrapText(m.updateError.Error(), modalWidth-4))
 			sections = append(sections, "")
+
+			var channel string
+			if plan != nil {
+				channel = plan.Channel
+			}
+			instruction, cmd := selfupdate.RecoveryAdvice(channel, runtime.GOOS)
+			if cmd != "" {
+				sections = append(sections, instruction)
+				sections = append(sections, lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Render("  "+cmd))
+				sections = append(sections, "")
+			}
+
 			sections = append(sections, dimStyle.Render("enter retry · esc/q close"))
 		} else {
 			if plan.CanExecute {
