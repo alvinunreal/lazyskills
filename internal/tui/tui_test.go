@@ -2678,6 +2678,81 @@ func TestRemoteDiscoveryRawFallbackRefBypass(t *testing.T) {
 	}
 }
 
+func TestDiscoveryInProgressNoop(t *testing.T) {
+	// Set up gitClone mock
+	oldGitClone := gitClone
+	defer func() { gitClone = oldGitClone }()
+	calledCloneCount := 0
+	gitClone = func(url, ref, tempDir string) error {
+		calledCloneCount++
+		return nil
+	}
+
+	m := appModel{
+		width: 120, height: 32, selected: 0,
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{
+					Name:      "Existing",
+					Scope:     model.ScopeProject,
+					LocalLock: &model.LocalLockEntry{Source: "owner/repo1", Ref: "main"},
+				},
+				{
+					Name:      "Existing2",
+					Scope:     model.ScopeProject,
+					LocalLock: &model.LocalLockEntry{Source: "owner/repo2", Ref: "main"},
+				},
+			},
+		},
+	}
+	m.discovery = make(map[string]SourceDiscovery)
+
+	// Set owner/repo1 to DiscoveryLoading
+	m.discovery["owner/repo1"] = SourceDiscovery{
+		Status: DiscoveryLoading,
+	}
+
+	// Call startDiscovery for owner/repo1 (same group is loading)
+	updated, cmd := m.startDiscovery("owner/repo1", true)
+	if cmd != nil {
+		t.Fatal("expected discovery cmd to be nil when the same group is already loading")
+	}
+	next := updated.(appModel)
+	disc := next.discovery["owner/repo1"]
+	if disc.Status != DiscoveryLoading {
+		t.Fatalf("expected status to remain DiscoveryLoading, got %s", disc.Status)
+	}
+	if disc.Error != "" {
+		t.Fatalf("expected empty error, got %s", disc.Error)
+	}
+	if calledCloneCount != 0 {
+		t.Fatalf("expected git clone not to be called, but called %d times", calledCloneCount)
+	}
+
+	// Call startDiscovery for owner/repo2 (different group, not loading)
+	_, cmdDifferent := m.startDiscovery("owner/repo2", true)
+	if cmdDifferent == nil {
+		t.Fatal("expected discovery cmd to start for a different group")
+	}
+
+	// Verify that if status of owner/repo1 is no longer loading (e.g. DiscoveryFailed), it can be rescanned when force is requested
+	m.discovery["owner/repo1"] = SourceDiscovery{
+		Status: DiscoveryFailed,
+		Error:  "some legacy error",
+	}
+	updatedRescan, cmdRescan := m.startDiscovery("owner/repo1", true)
+	if cmdRescan == nil {
+		t.Fatal("expected discovery cmd to start for a non-loading status when force is requested")
+	}
+	nextRescan := updatedRescan.(appModel)
+	if nextRescan.discovery["owner/repo1"].Status != DiscoveryLoading {
+		t.Fatalf("expected status to transition back to DiscoveryLoading, got %s", nextRescan.discovery["owner/repo1"].Status)
+	}
+	if nextRescan.discovery["owner/repo1"].Error != "" {
+		t.Fatalf("expected error block to be cleared/empty on rescan, got %s", nextRescan.discovery["owner/repo1"].Error)
+	}
+}
+
 func TestInteractiveSourceDetailModal(t *testing.T) {
 	t.Setenv("EDITOR", "nano")
 
