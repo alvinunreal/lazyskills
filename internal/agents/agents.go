@@ -271,6 +271,7 @@ func LocationsWithEnv(cwd string, e Env) []Location {
 	var out []Location
 	seen := map[string]bool{}
 	globalRoots := map[string]bool{}
+	homeIsCwd := filepath.Clean(cwd) == filepath.Clean(e.Home)
 	add := func(loc Location) {
 		key := string(loc.Scope) + "\x00" + loc.AgentName + "\x00" + loc.Root
 		if seen[key] {
@@ -291,7 +292,7 @@ func LocationsWithEnv(cwd string, e Env) []Location {
 	}
 	for _, a := range registry {
 		projectRoot := filepath.Join(cwd, filepath.FromSlash(a.ProjectDir))
-		if !globalRoots[filepath.Clean(projectRoot)] {
+		if !homeIsCwd && !globalRoots[filepath.Clean(projectRoot)] {
 			add(Location{Root: projectRoot, Scope: model.ScopeProject, AgentName: a.Name, Canonical: a.Universal})
 		}
 		if a.Universal && a.SupportsGlobal {

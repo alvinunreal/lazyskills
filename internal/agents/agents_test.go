@@ -163,12 +163,8 @@ func TestLocationsDoNotTreatHomeGlobalDirsAsProjectDirs(t *testing.T) {
 	locations := LocationsWithEnv(home, testEnv(home))
 
 	for _, loc := range locations {
-		if loc.Scope != "project" {
-			continue
-		}
-		switch filepath.Clean(loc.Root) {
-		case filepath.Join(home, ".agents", "skills"), filepath.Join(home, ".claude", "skills"), filepath.Join(home, ".codex", "skills"):
-			t.Fatalf("home global dir should not be project location: %#v", loc)
+		if loc.Scope == "project" {
+			t.Fatalf("home directory should not produce project locations: %#v", loc)
 		}
 	}
 }
