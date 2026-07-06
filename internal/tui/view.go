@@ -1306,7 +1306,7 @@ func (m appModel) footerText(width int, rows []skillsRow, actions []actions.Comm
 	if m.running {
 		text = "Working…"
 	} else if m.confirming {
-		text = "type yes · enter confirm · esc cancel"
+		text = "type y/yes · enter confirm · esc cancel"
 	} else if m.searching {
 		text = "type search · enter apply · esc cancel · backspace edit"
 	} else if m.detailModal {
@@ -1582,8 +1582,8 @@ func (m appModel) confirmationOverlay(layout appLayout) string {
 	if dangerous {
 		headerStyle = errorStyle.Bold(true)
 		borderColor = lipgloss.Color("203")
-		placeholder = "yes"
-		instruction = "Type yes to confirm, or Esc to cancel."
+		placeholder = "y / yes"
+		instruction = "Type y or yes to confirm, or Esc to cancel."
 	}
 	lines := []string{
 		headerStyle.Render(title),

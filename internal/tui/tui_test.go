@@ -1345,7 +1345,7 @@ func TestSingleRemoveRequiresYesConfirmation(t *testing.T) {
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(appModel)
-	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, "Type yes") || m.actionResult != nil {
+	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, "Type y or yes") || m.actionResult != nil {
 		t.Fatalf("expected inline confirmation error without command, confirming=%v err=%q result=%#v cmd=%v", m.confirming, m.confirmError, m.actionResult, cmd)
 	}
 }
@@ -1362,31 +1362,35 @@ func TestSingleRemoveRejectsSkillNameConfirmation(t *testing.T) {
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(appModel)
-	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, "Type yes") {
+	if cmd != nil || !m.confirming || !strings.Contains(m.confirmError, "Type y or yes") {
 		t.Fatalf("expected skill name not to confirm deletion, confirming=%v err=%q cmd=%v", m.confirming, m.confirmError, cmd)
 	}
 }
 
-func TestSingleRemoveAcceptsYesConfirmation(t *testing.T) {
-	old := runExec
-	runExec = func(spec runner.ExecSpec) runner.Result {
-		return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
-	}
-	t.Cleanup(func() { runExec = old })
+func TestSingleRemoveAcceptsYOrYesConfirmation(t *testing.T) {
+	for _, input := range []string{"y", "yes"} {
+		t.Run(input, func(t *testing.T) {
+			old := runExec
+			runExec = func(spec runner.ExecSpec) runner.Result {
+				return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
+			}
+			t.Cleanup(func() { runExec = old })
 
-	m := actionTestModel(t.TempDir())
-	m.commands = true
-	m.action = actionIndex(t, m, "Remove selected skill")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(appModel)
-	for _, r := range []rune("yes") {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = updated.(appModel)
-	}
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(appModel)
-	if cmd == nil || !m.running {
-		t.Fatalf("expected yes to run single remove, running=%v cmd=%v", m.running, cmd)
+			m := actionTestModel(t.TempDir())
+			m.commands = true
+			m.action = actionIndex(t, m, "Remove selected skill")
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			m = updated.(appModel)
+			for _, r := range []rune(input) {
+				updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+				m = updated.(appModel)
+			}
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			m = updated.(appModel)
+			if cmd == nil || !m.running {
+				t.Fatalf("expected %q to run single remove, running=%v cmd=%v", input, m.running, cmd)
+			}
+		})
 	}
 }
 
@@ -1460,8 +1464,8 @@ func TestConfirmationOverlayCopyMatchesRisk(t *testing.T) {
 
 	m.action = actionIndex(t, m, "Remove selected skill")
 	dangerOut := m.confirmationOverlay(appLayout{Width: 120, Height: 32})
-	if !strings.Contains(dangerOut, "Type yes to confirm") || strings.Contains(dangerOut, `Type "deploy-skill"`) || strings.Contains(dangerOut, "y / yes") {
-		t.Fatalf("expected single-remove yes-only copy, got %q", dangerOut)
+	if !strings.Contains(dangerOut, "Type y or yes to confirm") || strings.Contains(dangerOut, `Type "deploy-skill"`) {
+		t.Fatalf("expected single-remove y/yes copy, got %q", dangerOut)
 	}
 
 	m = bulkActionTestModel(t.TempDir())
@@ -1470,8 +1474,8 @@ func TestConfirmationOverlayCopyMatchesRisk(t *testing.T) {
 	m.action = actionIndex(t, m, "Remove 2 selected skills")
 	m.confirming = true
 	bulkOut := m.confirmationOverlay(appLayout{Width: 120, Height: 32})
-	if !strings.Contains(bulkOut, `Remove 2 selected skills`) || !strings.Contains(bulkOut, `Type yes to confirm`) || strings.Contains(bulkOut, "y / yes") {
-		t.Fatalf("expected bulk-remove yes-only copy, got %q", bulkOut)
+	if !strings.Contains(bulkOut, `Remove 2 selected skills`) || !strings.Contains(bulkOut, `Type y or yes to confirm`) {
+		t.Fatalf("expected bulk-remove y/yes copy, got %q", bulkOut)
 	}
 }
 

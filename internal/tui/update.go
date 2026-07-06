@@ -986,7 +986,7 @@ func (m appModel) confirmAction() (tea.Model, tea.Cmd) {
 func confirmationAccepted(input string, action actions.CommandPreview) bool {
 	value := strings.TrimSpace(strings.ToLower(input))
 	if action.Dangerous {
-		return value == "yes"
+		return value == "y" || value == "yes"
 	}
 	if value == "" {
 		return true
@@ -996,7 +996,7 @@ func confirmationAccepted(input string, action actions.CommandPreview) bool {
 
 func confirmationError(action actions.CommandPreview) string {
 	if action.Dangerous {
-		return "Type yes to confirm, or press Esc to cancel."
+		return "Type y or yes to confirm, or press Esc to cancel."
 	}
 	return "Press Enter to continue, or Esc to cancel."
 }
