@@ -547,3 +547,39 @@ func TestForAvailableSkillWithOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestForAvailableSkills(t *testing.T) {
+	ResetActionCaches()
+	originalLookPath := LookPath
+	defer func() {
+		LookPath = originalLookPath
+		ResetActionCaches()
+	}()
+	LookPath = func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+	ResetActionCaches()
+
+	skills := []AvailableSkillInstall{
+		{Source: "owner/one", DisplayName: "One", Slug: "one"},
+		{Source: "owner/two", DisplayName: "Two", Slug: "two"},
+	}
+
+	// Project install
+	preview := ForAvailableSkills(skills, false)
+	if !preview.Available || preview.ID != "bulk_install_skills" {
+		t.Fatalf("expected project bulk install preview available, got %+v", preview)
+	}
+	if len(preview.Exec.Batch) != 2 {
+		t.Fatalf("expected batch size 2, got %d", len(preview.Exec.Batch))
+	}
+
+	// Global install
+	globalPreview := ForAvailableSkills(skills, true)
+	if !globalPreview.Available || globalPreview.ID != "bulk_install_skills" {
+		t.Fatalf("expected global bulk install preview available, got %+v", globalPreview)
+	}
+	if len(globalPreview.Exec.Batch) != 2 {
+		t.Fatalf("expected global batch size 2, got %d", len(globalPreview.Exec.Batch))
+	}
+}

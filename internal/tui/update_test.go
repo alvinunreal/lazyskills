@@ -469,3 +469,160 @@ func TestTUIRegistryInvalidResultDisablesInstall(t *testing.T) {
 		t.Fatalf("invalid registry install should no-op in modal, confirming=%v modal=%v cmd=%v", m.confirming, m.registryModal, cmd)
 	}
 }
+
+func TestTUINoFalseNoSkillsFoundWhileSearchPending(t *testing.T) {
+	m := newModel("")
+	m.width = 100
+	m.height = 30
+	m.registryModal = true
+	m.registryQuery = "a"
+	m.registryResults = nil
+	m.registryFocusList = false
+
+	modelTmp, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	m = modelTmp.(appModel)
+	if !m.registryLoading {
+		t.Fatal("expected registryLoading to be true immediately on typing query >= 2 chars")
+	}
+
+	viewStr := m.View()
+	if strings.Contains(viewStr, "No skills found in registry.") {
+		t.Error("should not show 'No skills found' while search is loading/pending")
+	}
+	if !strings.Contains(viewStr, "Searching registry...") {
+		t.Error("expected 'Searching registry...' to be shown while search is loading/pending")
+	}
+}
+
+func TestTUICancelPreservesRegistryModalState(t *testing.T) {
+	m := newModel("")
+	m.width = 100
+	m.height = 30
+	m.registryModal = true
+	m.registryQuery = "hello"
+	m.registryResults = []registry.Skill{{
+		DisplayName: "Hello Skill",
+		Slug:        "hello-slug",
+		Source:      "owner/hello",
+	}}
+	m.registrySelected = 0
+	m.registryFocusList = true
+
+	// Press Enter to install (this starts confirmation)
+	modelTmp, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = modelTmp.(appModel)
+	if m.registryModal {
+		t.Fatal("expected registryModal to be false during confirmation")
+	}
+	if !m.confirming {
+		t.Fatal("expected confirmation to be active")
+	}
+
+	// Press Esc to cancel
+	modelTmp, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = modelTmp.(appModel)
+	if !m.registryModal {
+		t.Fatal("expected return to registryModal after cancelling")
+	}
+	if m.registryQuery != "hello" {
+		t.Errorf("expected registryQuery to be preserved, got %q", m.registryQuery)
+	}
+	if len(m.registryResults) != 1 || m.registryResults[0].Slug != "hello-slug" {
+		t.Errorf("expected registryResults to be preserved, got %#v", m.registryResults)
+	}
+}
+
+func TestTUIRegistrySpaceTogglesMultiSelect(t *testing.T) {
+	m := newModel("")
+	m.width = 100
+	m.height = 30
+	m.registryModal = true
+	m.registryQuery = "hello"
+	m.registryResults = []registry.Skill{
+		{DisplayName: "One", Slug: "one", Source: "owner/one"},
+		{DisplayName: "Two", Slug: "two", Source: "owner/two"},
+	}
+	m.registrySelected = 0
+	m.registryFocusList = true
+
+	// Press Space to select "One"
+	modelTmp, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = modelTmp.(appModel)
+
+	key1 := "owner/one\x00one"
+	if _, ok := m.registrySelectedKeys[key1]; !ok {
+		t.Fatal("expected 'One' to be selected")
+	}
+
+	// Press Down then Space to select "Two"
+	modelTmp, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = modelTmp.(appModel)
+	modelTmp, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = modelTmp.(appModel)
+
+	key2 := "owner/two\x00two"
+	if _, ok := m.registrySelectedKeys[key2]; !ok {
+		t.Fatal("expected 'Two' to be selected")
+	}
+	if len(m.registrySelectedKeys) != 2 {
+		t.Errorf("expected 2 selected skills, got %d", len(m.registrySelectedKeys))
+	}
+
+	// Press Space again on "Two" to deselect it
+	modelTmp, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = modelTmp.(appModel)
+	if _, ok := m.registrySelectedKeys[key2]; ok {
+		t.Fatal("expected 'Two' to be deselected")
+	}
+	if len(m.registrySelectedKeys) != 1 {
+		t.Errorf("expected 1 selected skill remaining, got %d", len(m.registrySelectedKeys))
+	}
+}
+
+func TestTUIRegistryMultiInstallDispatch(t *testing.T) {
+	m := newModel("")
+	m.width = 100
+	m.height = 30
+	m.registryModal = true
+	m.registryQuery = "hello"
+	m.registryResults = []registry.Skill{
+		{DisplayName: "One", Slug: "one", Source: "owner/one"},
+		{DisplayName: "Two", Slug: "two", Source: "owner/two"},
+	}
+	m.registrySelected = 0
+	m.registryFocusList = true
+
+	// Select both of them
+	modelTmp, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = modelTmp.(appModel)
+	modelTmp, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = modelTmp.(appModel)
+	modelTmp, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = modelTmp.(appModel)
+
+	// Press Enter to install
+	modelTmp, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = modelTmp.(appModel)
+
+	if m.registryModal {
+		t.Fatal("expected registryModal to be closed")
+	}
+	if !m.confirming {
+		t.Fatal("expected confirming to be active")
+	}
+	if m.pendingAction == nil {
+		t.Fatal("expected pendingAction to be set")
+	}
+	if m.pendingAction.ID != "bulk_install_skills" {
+		t.Errorf("expected bulk_install_skills action, got %s", m.pendingAction.ID)
+	}
+	if len(m.pendingAction.Exec.Batch) != 2 {
+		t.Errorf("expected a batch size of 2, got %d", len(m.pendingAction.Exec.Batch))
+	}
+
+	// Check prompt/visual contains bulk info
+	viewStr := m.View()
+	if !strings.Contains(viewStr, "Confirm action") && !strings.Contains(viewStr, "Install selected skills") {
+		t.Errorf("unexpected confirmation view: %s", viewStr)
+	}
+}

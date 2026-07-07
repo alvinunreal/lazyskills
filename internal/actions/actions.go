@@ -149,6 +149,56 @@ func bulkBatch(skills []*model.Skill, resolve SkillsResolver, actionID string) (
 	return batch, true, ""
 }
 
+type AvailableSkillInstall struct {
+	Source      string
+	DisplayName string
+	Slug        string
+}
+
+func ForAvailableSkills(skills []AvailableSkillInstall, global bool) CommandPreview {
+	return ForAvailableSkillsWithOptionsAndResolver(skills, global, ResolveSkillsCommand)
+}
+
+func ForAvailableSkillsWithOptionsAndResolver(skills []AvailableSkillInstall, global bool, resolve SkillsResolver) CommandPreview {
+	if len(skills) == 0 {
+		title := "Install selected skills"
+		if global {
+			title = "Install selected skills globally"
+		}
+		return unavailablePreview(title, "no skills selected")
+	}
+
+	var batch []ExecSpec
+	for _, sk := range skills {
+		previews := ForAvailableSkillWithOptionsAndResolver(sk.Source, InstallOptions{
+			DisplayName: sk.DisplayName,
+			Slug:        sk.Slug,
+			Global:      global,
+		}, resolve)
+		if len(previews) == 0 || !previews[0].Available {
+			reason := "unsupported command"
+			if len(previews) > 0 {
+				reason = previews[0].Reason
+			}
+			title := "Install selected skills"
+			if global {
+				title = "Install selected skills globally"
+			}
+			return unavailablePreview(title, fmt.Sprintf("%s: %s", compat.SanitizeMetadata(sk.DisplayName), reason))
+		}
+		batch = append(batch, previews[0].Exec)
+	}
+
+	title := "Install selected skills"
+	confirmValue := fmt.Sprintf("install %d skills", len(skills))
+	if global {
+		title = "Install selected skills globally"
+		confirmValue = fmt.Sprintf("install %d skills globally", len(skills))
+	}
+
+	return newBatchPreview("bulk_install_skills", title, batch, "Install the selected skills.", confirmValue, false)
+}
+
 func ForAvailableSkill(source, name string) []CommandPreview {
 	return ForAvailableSkillWithResolver(source, name, false, ResolveSkillsCommand)
 }

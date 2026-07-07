@@ -199,6 +199,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.registryResults = nil
 				m.registryError = nil
 				m.registryLoading = false
+				m.registrySelectedKeys = nil
 				m.syncViewport()
 				return m, nil
 			case "q":
@@ -208,6 +209,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.registryResults = nil
 					m.registryError = nil
 					m.registryLoading = false
+					m.registrySelectedKeys = nil
 					m.syncViewport()
 					return m, nil
 				}
@@ -236,6 +238,24 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.syncViewport()
 				}
 				return m, nil
+			case " ":
+				if m.registryFocusList && len(m.registryResults) > 0 {
+					s := m.registryResults[m.registrySelected]
+					status, _ := m.checkRegistrySkillStatus(s)
+					if status != StatusInstalled && !s.Invalid {
+						if m.registrySelectedKeys == nil {
+							m.registrySelectedKeys = make(map[string]registry.Skill)
+						}
+						key := s.Source + "\x00" + s.Slug
+						if _, exists := m.registrySelectedKeys[key]; exists {
+							delete(m.registrySelectedKeys, key)
+						} else {
+							m.registrySelectedKeys[key] = s
+						}
+						m.syncViewport()
+					}
+					return m, nil
+				}
 			case "enter":
 				if !m.registryFocusList {
 					if len(m.registryQuery) >= 2 && (m.registryError != nil || len(m.registryResults) == 0) {
@@ -251,7 +271,28 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				// List is focused: start project install confirmation
-				if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
+				selectedCount := len(m.registrySelectedKeys)
+				if selectedCount > 0 {
+					var list []actions.AvailableSkillInstall
+					for _, s := range m.registrySelectedKeys {
+						list = append(list, actions.AvailableSkillInstall{
+							Source:      s.Source,
+							DisplayName: s.DisplayName,
+							Slug:        s.Slug,
+						})
+					}
+					preview := actions.ForAvailableSkills(list, false)
+					if preview.Available {
+						m.registryModal = false
+						m.pendingAction = &preview
+						m.confirming = true
+						m.confirmInput = ""
+						m.confirmError = ""
+						m.confirmReturnRegistry = true
+						m.syncViewport()
+						return m, nil
+					}
+				} else if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
 					s := m.registryResults[m.registrySelected]
 					status, checkMsg := m.checkRegistrySkillStatus(s)
 					if status == StatusInstalled || s.Invalid {
@@ -274,6 +315,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.confirming = true
 						m.confirmInput = ""
 						m.confirmError = ""
+						m.confirmReturnRegistry = true
 						m.syncViewport()
 						return m, nil
 					}
@@ -282,7 +324,28 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "g":
 				if m.registryFocusList {
 					// list focused: start global install confirmation
-					if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
+					selectedCount := len(m.registrySelectedKeys)
+					if selectedCount > 0 {
+						var list []actions.AvailableSkillInstall
+						for _, s := range m.registrySelectedKeys {
+							list = append(list, actions.AvailableSkillInstall{
+								Source:      s.Source,
+								DisplayName: s.DisplayName,
+								Slug:        s.Slug,
+							})
+						}
+						preview := actions.ForAvailableSkills(list, true)
+						if preview.Available {
+							m.registryModal = false
+							m.pendingAction = &preview
+							m.confirming = true
+							m.confirmInput = ""
+							m.confirmError = ""
+							m.confirmReturnRegistry = true
+							m.syncViewport()
+							return m, nil
+						}
+					} else if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
 						s := m.registryResults[m.registrySelected]
 						status, checkMsg := m.checkRegistrySkillStatus(s)
 						if status == StatusInstalled || s.Invalid {
@@ -304,6 +367,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.confirming = true
 							m.confirmInput = ""
 							m.confirmError = ""
+							m.confirmReturnRegistry = true
 							m.syncViewport()
 							return m, nil
 						}
@@ -328,12 +392,14 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.registrySelected = 0
 				m.registryGeneration++
 				if len(m.registryQuery) >= 2 {
+					m.registryLoading = true
 					m.syncViewport()
 					return m, scheduleRegistrySearch(m.registryQuery, m.registryGeneration)
 				} else {
 					m.registryResults = nil
 					m.registryError = nil
 					m.registryLoading = false
+					m.registrySelectedKeys = nil
 					m.syncViewport()
 					return m, nil
 				}
@@ -503,7 +569,10 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirmInput = ""
 				m.confirmError = ""
 				m.pendingAction = nil
-				if m.confirmReturnDetailModal {
+				if m.confirmReturnRegistry {
+					m.registryModal = true
+					m.confirmReturnRegistry = false
+				} else if m.confirmReturnDetailModal {
 					m.detailModal = true
 					m.modalSource = m.confirmReturnModalSource
 					m.modalSelected = m.confirmReturnModalSelected
@@ -1515,6 +1584,7 @@ func (m appModel) openRegistryModal() appModel {
 	m.registryError = nil
 	m.registryLoading = false
 	m.registryFocusList = false
+	m.registrySelectedKeys = nil
 	m.registryGeneration++
 	return m
 }

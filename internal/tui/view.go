@@ -1605,7 +1605,8 @@ func (m appModel) confirmationOverlay(layout appLayout) string {
 	if input == "" {
 		input = dimStyle.Render(placeholder)
 	}
-	lines = append(lines, "", "> "+input+"_")
+	cursor := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("┃")
+	lines = append(lines, "", "> "+input+cursor)
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(borderColor).Padding(1, 2).Width(52).Render(strings.Join(lines, "\n"))
 	return fitToScreen(lipgloss.Place(layout.Width, layout.Height, lipgloss.Center, lipgloss.Center, box), layout.Width, layout.Height)
 }
@@ -1708,6 +1709,10 @@ func truncateReleaseNotes(notes string, width int) string {
 	return strings.Join(out, "\n")
 }
 
+func (m appModel) registrySelectedCount() int {
+	return len(m.registrySelectedKeys)
+}
+
 func (m appModel) registryModalOverlay(layout appLayout) string {
 	modalWidth, modalHeight := detailModalDimensions(layout)
 	innerWidth := modalWidth - 4
@@ -1720,26 +1725,38 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 	// Left pane header: Query input
 	var inputLine string
 	focusPrompt := "Search: "
-	if !m.registryFocusList {
-		focusPrompt = "Search › "
-	}
 	cursor := ""
 	if !m.registryFocusList {
-		cursor = "_"
+		cursor = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("┃")
 	}
-	if m.registryQuery == "" {
-		inputLine = focusPrompt + dimStyle.Render("Type to search...") + cursor
+
+	if m.registryFocusList {
+		// List is focused: input prompt is dim
+		promptStyled := dimStyle.Render(focusPrompt)
+		if m.registryQuery == "" {
+			inputLine = promptStyled + dimStyle.Render("Type to search...")
+		} else {
+			inputLine = promptStyled + m.registryQuery
+		}
 	} else {
-		inputLine = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true).Render(focusPrompt) + m.registryQuery + cursor
+		// Search input is focused: prompt has high contrast
+		promptStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true).Render(focusPrompt)
+		if m.registryQuery == "" {
+			inputLine = promptStyled + dimStyle.Render("Type to search...") + cursor
+		} else {
+			inputLine = promptStyled + m.registryQuery + cursor
+		}
+	}
+
+	if m.registryLoading {
+		inputLine += dimStyle.Render(" (searching...)")
 	}
 
 	var leftContentLines []string
 	leftContentLines = append(leftContentLines, inputLine, "")
 
 	// Left pane body: status or results
-	if m.registryLoading {
-		leftContentLines = append(leftContentLines, "  "+runningStyle.Render("Searching registry..."))
-	} else if m.registryError != nil {
+	if m.registryError != nil && !m.registryLoading {
 		leftContentLines = append(leftContentLines,
 			errorStyle.Render("  Error fetching results:"),
 			wrapText("  "+m.registryError.Error(), leftWidth),
@@ -1749,7 +1766,11 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 	} else if len(m.registryQuery) < 2 {
 		leftContentLines = append(leftContentLines, "  Type at least 2 characters to search.")
 	} else if len(m.registryResults) == 0 {
-		leftContentLines = append(leftContentLines, "  No skills found in registry.")
+		if m.registryLoading {
+			leftContentLines = append(leftContentLines, "  "+runningStyle.Render("Searching registry..."))
+		} else {
+			leftContentLines = append(leftContentLines, "  No skills found in registry.")
+		}
 	} else {
 		// Show results
 		for idx, s := range m.registryResults {
@@ -1782,7 +1803,13 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 			if availNameWidth < 5 {
 				availNameWidth = 5
 			}
-			namePart := truncate(s.DisplayName, availNameWidth)
+			selectedMark := "  "
+			if m.registrySelectedKeys != nil {
+				if _, isSel := m.registrySelectedKeys[s.Source+"\x00"+s.Slug]; isSel {
+					selectedMark = "● "
+				}
+			}
+			namePart := truncate(selectedMark+s.DisplayName, availNameWidth)
 
 			// Pad the line
 			line := selector + namePart
@@ -1802,9 +1829,52 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 
 	leftPane := fitLines(strings.Join(leftContentLines, "\n"), innerHeight)
 
-	// Right pane: detail preview
+	// Right pane: detail preview / bulk details
 	var rightContentLines []string
-	if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
+	selectedCount := m.registrySelectedCount()
+	if selectedCount > 0 {
+		rightContentLines = append(rightContentLines,
+			titleStyle.Render(fmt.Sprintf("Bulk Installation (%d)", selectedCount)),
+			"",
+			sectionHeaderStyle.Render("Selected Skills:"),
+			"",
+		)
+		for _, selSkill := range m.registrySelectedKeys {
+			rightContentLines = append(rightContentLines,
+				fmt.Sprintf("  • %s (%s)", selSkill.DisplayName, selSkill.Slug),
+			)
+		}
+
+		var list []actions.AvailableSkillInstall
+		for _, s := range m.registrySelectedKeys {
+			list = append(list, actions.AvailableSkillInstall{
+				Source:      s.Source,
+				DisplayName: s.DisplayName,
+				Slug:        s.Slug,
+			})
+		}
+		projPreview := actions.ForAvailableSkills(list, false)
+		globalPreview := actions.ForAvailableSkills(list, true)
+
+		rightContentLines = append(rightContentLines, "")
+		rightContentLines = append(rightContentLines, sectionHeaderStyle.Render("Install Commands:"), "")
+		if projPreview.Available {
+			rightContentLines = append(rightContentLines,
+				dimStyle.Render("Project-local:"),
+				"  "+projPreview.Command,
+			)
+		} else {
+			rightContentLines = append(rightContentLines, errorStyle.Render("Project-local: "+projPreview.Reason))
+		}
+		if globalPreview.Available {
+			rightContentLines = append(rightContentLines,
+				dimStyle.Render("Globally (adds -g):"),
+				"  "+globalPreview.Command,
+			)
+		} else {
+			rightContentLines = append(rightContentLines, errorStyle.Render("Globally: "+globalPreview.Reason))
+		}
+	} else if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
 		s := m.registryResults[m.registrySelected]
 		status, similarMsg := m.checkRegistrySkillStatus(s)
 
@@ -1931,10 +2001,16 @@ func (m appModel) registryModalHelpLine() string {
 		return "type search · tab select list · esc close"
 	}
 	parts := []string{"↑/↓ choose"}
-	if m.selectedRegistryResultInstallable() {
-		parts = append(parts, "enter install to project", "g install globally")
+	parts = append(parts, "space toggle")
+	selectedCount := m.registrySelectedCount()
+	if selectedCount > 0 {
+		parts = append(parts, fmt.Sprintf("enter install (%d)", selectedCount), fmt.Sprintf("g install globally (%d)", selectedCount))
 	} else {
-		parts = append(parts, "install unavailable")
+		if m.selectedRegistryResultInstallable() {
+			parts = append(parts, "enter install to project", "g install globally")
+		} else {
+			parts = append(parts, "install unavailable")
+		}
 	}
 	parts = append(parts, "tab type search", "esc close")
 	return strings.Join(parts, " · ")

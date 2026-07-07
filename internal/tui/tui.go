@@ -117,6 +117,8 @@ type appModel struct {
 	registryError              error
 	registryGeneration         int
 	registryFocusList          bool
+	registrySelectedKeys       map[string]registry.Skill
+	confirmReturnRegistry      bool
 }
 
 type paneLayout struct {
