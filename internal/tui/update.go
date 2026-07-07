@@ -192,18 +192,10 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.registryModal {
-			switch key {
-			case "esc":
-				m.registryModal = false
-				m.registryQuery = ""
-				m.registryResults = nil
-				m.registryError = nil
-				m.registryLoading = false
-				m.registrySelectedKeys = nil
-				m.syncViewport()
-				return m, nil
-			case "q":
-				if m.registryFocusList {
+			if m.registryFocusList {
+				// LIST IS FOCUSED
+				switch key {
+				case "esc":
 					m.registryModal = false
 					m.registryQuery = ""
 					m.registryResults = nil
@@ -212,117 +204,110 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.registrySelectedKeys = nil
 					m.syncViewport()
 					return m, nil
-				}
-				// Otherwise let it flow down to type 'q' in search query
-			case "ctrl+c":
-				return m, tea.Quit
-			case "tab":
-				m.registryFocusList = !m.registryFocusList
-				m.syncViewport()
-				return m, nil
-			case "up", "k":
-				if len(m.registryResults) > 0 {
-					m.registrySelected--
-					if m.registrySelected < 0 {
-						m.registrySelected = len(m.registryResults) - 1
-					}
+				case "q":
+					m.registryModal = false
+					m.registryQuery = ""
+					m.registryResults = nil
+					m.registryError = nil
+					m.registryLoading = false
+					m.registrySelectedKeys = nil
 					m.syncViewport()
-				}
-				return m, nil
-			case "down", "j":
-				if len(m.registryResults) > 0 {
-					m.registrySelected++
-					if m.registrySelected >= len(m.registryResults) {
-						m.registrySelected = 0
-					}
-					m.syncViewport()
-				}
-				return m, nil
-			case " ":
-				if m.registryFocusList && len(m.registryResults) > 0 {
-					s := m.registryResults[m.registrySelected]
-					status, _ := m.checkRegistrySkillStatus(s)
-					if status != StatusInstalled && !s.Invalid {
-						if m.registrySelectedKeys == nil {
-							m.registrySelectedKeys = make(map[string]registry.Skill)
-						}
-						key := s.Source + "\x00" + s.Slug
-						if _, exists := m.registrySelectedKeys[key]; exists {
-							delete(m.registrySelectedKeys, key)
-						} else {
-							m.registrySelectedKeys[key] = s
-						}
-						m.syncViewport()
-					}
 					return m, nil
-				}
-			case "enter":
-				if !m.registryFocusList {
-					if len(m.registryQuery) >= 2 && (m.registryError != nil || len(m.registryResults) == 0) {
-						m.registryGeneration++
-						m.registryLoading = true
-						m.syncViewport()
-						return m, m.searchRegistryCmd(m.registryQuery, m.registryGeneration)
-					}
+				case "ctrl+c":
+					return m, tea.Quit
+				case "tab":
+					m.registryFocusList = false
+					m.syncViewport()
+					return m, nil
+				case "up", "k":
 					if len(m.registryResults) > 0 {
-						m.registryFocusList = true
+						m.registrySelected--
+						if m.registrySelected < 0 {
+							m.registrySelected = len(m.registryResults) - 1
+						}
 						m.syncViewport()
 					}
 					return m, nil
-				}
-				// List is focused: start project install confirmation
-				selectedCount := len(m.registrySelectedKeys)
-				if selectedCount > 0 {
-					var list []actions.AvailableSkillInstall
-					for _, s := range m.registrySelectedKeys {
-						list = append(list, actions.AvailableSkillInstall{
-							Source:      s.Source,
+				case "down", "j":
+					if len(m.registryResults) > 0 {
+						m.registrySelected++
+						if m.registrySelected >= len(m.registryResults) {
+							m.registrySelected = 0
+						}
+						m.syncViewport()
+					}
+					return m, nil
+				case " ":
+					if len(m.registryResults) > 0 {
+						s := m.registryResults[m.registrySelected]
+						status, _ := m.checkRegistrySkillStatus(s)
+						if status != StatusInstalled && !s.Invalid {
+							if m.registrySelectedKeys == nil {
+								m.registrySelectedKeys = make(map[string]registry.Skill)
+							}
+							key := s.Source + "\x00" + s.Slug
+							if _, exists := m.registrySelectedKeys[key]; exists {
+								delete(m.registrySelectedKeys, key)
+							} else {
+								m.registrySelectedKeys[key] = s
+							}
+							m.syncViewport()
+						}
+					}
+					return m, nil
+				case "enter":
+					// List is focused: start project install confirmation
+					selectedCount := len(m.registrySelectedKeys)
+					if selectedCount > 0 {
+						var list []actions.AvailableSkillInstall
+						for _, s := range m.registrySelectedKeys {
+							list = append(list, actions.AvailableSkillInstall{
+								Source:      s.Source,
+								DisplayName: s.DisplayName,
+								Slug:        s.Slug,
+							})
+						}
+						preview := actions.ForAvailableSkills(list, false)
+						if preview.Available {
+							m.registryModal = false
+							m.pendingAction = &preview
+							m.confirming = true
+							m.confirmInput = ""
+							m.confirmError = ""
+							m.confirmReturnRegistry = true
+							m.syncViewport()
+							return m, nil
+						}
+					} else if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
+						s := m.registryResults[m.registrySelected]
+						status, checkMsg := m.checkRegistrySkillStatus(s)
+						if status == StatusInstalled || s.Invalid {
+							// Do not install
+							return m, nil
+						}
+						// Build preview
+						previews := actions.ForAvailableSkillWithOptions(s.Source, actions.InstallOptions{
 							DisplayName: s.DisplayName,
 							Slug:        s.Slug,
+							Global:      false,
 						})
-					}
-					preview := actions.ForAvailableSkills(list, false)
-					if preview.Available {
-						m.registryModal = false
-						m.pendingAction = &preview
-						m.confirming = true
-						m.confirmInput = ""
-						m.confirmError = ""
-						m.confirmReturnRegistry = true
-						m.syncViewport()
-						return m, nil
-					}
-				} else if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
-					s := m.registryResults[m.registrySelected]
-					status, checkMsg := m.checkRegistrySkillStatus(s)
-					if status == StatusInstalled || s.Invalid {
-						// Do not install
-						return m, nil
-					}
-					// Build preview
-					previews := actions.ForAvailableSkillWithOptions(s.Source, actions.InstallOptions{
-						DisplayName: s.DisplayName,
-						Slug:        s.Slug,
-						Global:      false,
-					})
-					if len(previews) > 0 && previews[0].Available {
-						m.registryModal = false
-						armed := previews[0]
-						if status == StatusSimilarInstalled {
-							armed.Description += " (Warning: A similar skill named '" + checkMsg + "' is already installed)."
+						if len(previews) > 0 && previews[0].Available {
+							m.registryModal = false
+							armed := previews[0]
+							if status == StatusSimilarInstalled {
+								armed.Description += " (Warning: A similar skill named '" + checkMsg + "' is already installed)."
+							}
+							m.pendingAction = &armed
+							m.confirming = true
+							m.confirmInput = ""
+							m.confirmError = ""
+							m.confirmReturnRegistry = true
+							m.syncViewport()
+							return m, nil
 						}
-						m.pendingAction = &armed
-						m.confirming = true
-						m.confirmInput = ""
-						m.confirmError = ""
-						m.confirmReturnRegistry = true
-						m.syncViewport()
-						return m, nil
 					}
-				}
-				return m, nil
-			case "g":
-				if m.registryFocusList {
+					return m, nil
+				case "g":
 					// list focused: start global install confirmation
 					selectedCount := len(m.registrySelectedKeys)
 					if selectedCount > 0 {
@@ -374,38 +359,77 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, nil
 				}
-				// fallback: typing 'g'
-			}
-
-			// If input is focused and it's a typing key
-			if !m.registryFocusList {
+				// List is focused: ignore any other keypresses (no character typing)
+				return m, nil
+			} else {
+				// SEARCH INPUT IS FOCUSED
 				switch key {
-				case "backspace", "ctrl+h":
-					if len(m.registryQuery) > 0 {
-						m.registryQuery = m.registryQuery[:len(m.registryQuery)-1]
-					}
-				default:
-					if len(key) == 1 {
-						m.registryQuery += key
-					}
-				}
-				m.registrySelected = 0
-				m.registryGeneration++
-				if len(m.registryQuery) >= 2 {
-					m.registryLoading = true
-					m.syncViewport()
-					return m, scheduleRegistrySearch(m.registryQuery, m.registryGeneration)
-				} else {
+				case "esc":
+					m.registryModal = false
+					m.registryQuery = ""
 					m.registryResults = nil
 					m.registryError = nil
 					m.registryLoading = false
 					m.registrySelectedKeys = nil
 					m.syncViewport()
 					return m, nil
+				case "ctrl+c":
+					return m, tea.Quit
+				case "tab":
+					m.registryFocusList = true
+					m.syncViewport()
+					return m, nil
+				case "enter":
+					if len(m.registryQuery) >= 2 && (m.registryError != nil || len(m.registryResults) == 0) {
+						m.registryGeneration++
+						m.registryLoading = true
+						m.syncViewport()
+						return m, m.searchRegistryCmd(m.registryQuery, m.registryGeneration)
+					}
+					if len(m.registryResults) > 0 {
+						m.registryFocusList = true
+						m.syncViewport()
+					}
+					return m, nil
+				case "backspace", "ctrl+h":
+					if len(m.registryQuery) > 0 {
+						m.registryQuery = m.registryQuery[:len(m.registryQuery)-1]
+					}
+					m.registrySelected = 0
+					m.registryGeneration++
+					if len(m.registryQuery) >= 2 {
+						m.registryLoading = true
+						m.syncViewport()
+						return m, scheduleRegistrySearch(m.registryQuery, m.registryGeneration)
+					} else {
+						m.registryResults = nil
+						m.registryError = nil
+						m.registryLoading = false
+						m.registrySelectedKeys = nil
+						m.syncViewport()
+						return m, nil
+					}
+				default:
+					if len(key) == 1 {
+						m.registryQuery += key
+						m.registrySelected = 0
+						m.registryGeneration++
+						if len(m.registryQuery) >= 2 {
+							m.registryLoading = true
+							m.syncViewport()
+							return m, scheduleRegistrySearch(m.registryQuery, m.registryGeneration)
+						} else {
+							m.registryResults = nil
+							m.registryError = nil
+							m.registryLoading = false
+							m.registrySelectedKeys = nil
+							m.syncViewport()
+							return m, nil
+						}
+					}
 				}
+				return m, nil
 			}
-
-			return m, nil
 		}
 		if m.appUpdateModal {
 			switch key {

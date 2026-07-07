@@ -661,3 +661,70 @@ func TestTUIRegistryListRenderingWithContextAndFocus(t *testing.T) {
 		t.Errorf("expected confirmation view to explicitly state target agents, got:\n%s", viewStr2)
 	}
 }
+
+func TestTUIRegistryModeKeySeparation(t *testing.T) {
+	m := newModel("")
+	m.width = 100
+	m.height = 30
+	m.registryModal = true
+	m.registryQuery = "ab"
+	m.registryResults = []registry.Skill{
+		{DisplayName: "One", Slug: "one", Source: "owner/one"},
+		{DisplayName: "Two", Slug: "two", Source: "owner/two"},
+		{DisplayName: "Three", Slug: "three", Source: "owner/three"},
+	}
+	m.registrySelected = 0
+
+	// Test 1: Search focused (list unfocused)
+	m.registryFocusList = false
+
+	// Typing 'j' should append to query, not change selection
+	modelTmp, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = modelTmp.(appModel)
+	if m.registryQuery != "abj" {
+		t.Errorf("expected 'j' to append to query, got query=%q", m.registryQuery)
+	}
+	if m.registrySelected != 0 {
+		t.Errorf("expected selection to remain 0, got %d", m.registrySelected)
+	}
+
+	// Typing 'k' should append to query
+	modelTmp, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = modelTmp.(appModel)
+	if m.registryQuery != "abjk" {
+		t.Errorf("expected 'k' to append to query, got query=%q", m.registryQuery)
+	}
+	if m.registrySelected != 0 {
+		t.Errorf("expected selection to remain 0, got %d", m.registrySelected)
+	}
+
+	// Test 2: List focused
+	m.registryFocusList = true
+
+	// Pressing 'j' should navigate list down
+	modelTmp, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = modelTmp.(appModel)
+	if m.registrySelected != 1 {
+		t.Errorf("expected selection to move to 1, got %d", m.registrySelected)
+	}
+	if m.registryQuery != "abjk" {
+		t.Errorf("expected query to remain unchanged, got query=%q", m.registryQuery)
+	}
+
+	// Pressing 'k' should navigate list up
+	modelTmp, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = modelTmp.(appModel)
+	if m.registrySelected != 0 {
+		t.Errorf("expected selection to move back to 0, got %d", m.registrySelected)
+	}
+	if m.registryQuery != "abjk" {
+		t.Errorf("expected query to remain unchanged, got query=%q", m.registryQuery)
+	}
+
+	// Pressing any other printable key (e.g. 'x') when list is focused should be ignored
+	modelTmp, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m = modelTmp.(appModel)
+	if m.registryQuery != "abjk" {
+		t.Errorf("expected query to remain unchanged on list-focused alpha input, got query=%q", m.registryQuery)
+	}
+}
