@@ -1722,6 +1722,34 @@ func truncateReleaseNotes(notes string, width int) string {
 	return strings.Join(out, "\n")
 }
 
+func parseSourceURLDetails(source string) (repo string, folder string) {
+	src := source
+	src = strings.TrimPrefix(src, "git+https://")
+	src = strings.TrimPrefix(src, "https://")
+	src = strings.TrimPrefix(src, "http://")
+	src = strings.TrimPrefix(src, "git@")
+	src = strings.ReplaceAll(src, ":", "/")
+	src = strings.TrimSuffix(src, ".git")
+	src = strings.TrimRight(src, "/")
+
+	// Remove host prefix
+	for _, host := range []string{"github.com/", "gitlab.com/"} {
+		src = strings.TrimPrefix(src, host)
+	}
+
+	// Now src should look like "owner/repo/sub/folders" or just "owner/repo"
+	parts := strings.Split(src, "/")
+	if len(parts) >= 2 {
+		repo = parts[0] + "/" + parts[1]
+		if len(parts) > 2 {
+			folder = strings.Join(parts[2:], "/")
+		}
+	} else {
+		repo = src
+	}
+	return repo, folder
+}
+
 func (m appModel) registrySelectedCount() int {
 	return len(m.registrySelectedKeys)
 }
@@ -1737,7 +1765,7 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 
 	// Left pane header: Query input
 	var inputLine string
-	focusPrompt := "Search: "
+	focusPrompt := "  Search: "
 
 	if m.registryFocusList {
 		// List is focused: input prompt is dim
@@ -1774,27 +1802,27 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 		)
 	} else if len(m.registryQuery) < 2 {
 		leftContentLines = append(leftContentLines, "  Type at least 2 characters to search.")
+	} else if m.registryLoading {
+		leftContentLines = append(leftContentLines, "  "+runningStyle.Render("Searching registry..."))
 	} else if len(m.registryResults) == 0 {
-		if m.registryLoading {
-			leftContentLines = append(leftContentLines, "  "+runningStyle.Render("Searching registry..."))
-		} else {
-			leftContentLines = append(leftContentLines, "  No skills found in registry.")
-		}
+		leftContentLines = append(leftContentLines, "  No skills found in registry.")
 	} else {
 		// Show results
 		for idx, s := range m.registryResults {
-			selector := " "
-			if idx == m.registrySelected {
-				selector = "›"
-			}
-			selectedMark := " "
+			isSel := false
 			if m.registrySelectedKeys != nil {
-				if _, isSel := m.registrySelectedKeys[s.Source+"\x00"+s.Slug]; isSel {
-					selectedMark = "●"
-				}
+				_, isSel = m.registrySelectedKeys[s.Source+"\x00"+s.Slug]
 			}
-			prefix := selector + selectedMark + " "
-			prefixWidth := 3
+
+			prefix := "  "
+			if idx == m.registrySelected && isSel {
+				prefix = "›● "
+			} else if idx == m.registrySelected {
+				prefix = "› "
+			} else if isSel {
+				prefix = "● "
+			}
+			prefixWidth := lipgloss.Width(prefix)
 
 			status, _ := m.checkRegistrySkillStatus(s)
 			var badge string
@@ -1866,9 +1894,9 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 			if idx == m.registrySelected {
 				var lineStyled string
 				if m.registryFocusList {
-					lineStyled = selectedStyle.Render(padRight(prefix+truncatedPlain+rightPart, leftWidth))
+					lineStyled = selectedStyle.Render(padRight(prefix+truncatedPlain, leftWidth-rightPartWidth-1) + " " + rightPart)
 				} else {
-					lineStyled = inactiveSelectedStyle.Render(padRight(prefix+truncatedPlain+rightPart, leftWidth))
+					lineStyled = inactiveSelectedStyle.Render(padRight(prefix+truncatedPlain, leftWidth-rightPartWidth-1) + " " + rightPart)
 				}
 				leftContentLines = append(leftContentLines, lineStyled)
 			} else {
@@ -1882,7 +1910,7 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 	// Right pane: detail preview / bulk details
 	var rightContentLines []string
 	selectedCount := m.registrySelectedCount()
-	if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) {
+	if len(m.registryResults) > 0 && m.registrySelected >= 0 && m.registrySelected < len(m.registryResults) && !m.registryLoading {
 		s := m.registryResults[m.registrySelected]
 		status, similarMsg := m.checkRegistrySkillStatus(s)
 
@@ -1896,10 +1924,17 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 		rightContentLines = append(rightContentLines,
 			titleStyle.Render(s.DisplayName),
 			"",
-			formatMetaLine("Slug:", s.Slug, rightWidth),
-			formatMetaLine("Source:", s.Source, rightWidth),
-			formatMetaLine("Installs:", fmt.Sprintf("%d", s.Installs), rightWidth),
 		)
+
+		repo, folder := parseSourceURLDetails(s.Source)
+		rightContentLines = append(rightContentLines,
+			formatMetaLine("Slug:", s.Slug, rightWidth),
+			formatMetaLine("Repository:", repo, rightWidth),
+		)
+		if folder != "" {
+			rightContentLines = append(rightContentLines, formatMetaLine("Folder:", folder, rightWidth))
+		}
+		rightContentLines = append(rightContentLines, formatMetaLine("Installs:", fmt.Sprintf("%d", s.Installs), rightWidth))
 
 		var statusVal string
 		allowInstall := true
@@ -1922,6 +1957,38 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 		rightContentLines = append(rightContentLines, formatMetaLine("Status:", statusVal, rightWidth))
 		if status == StatusSimilarInstalled && similarMsg != "" {
 			rightContentLines = append(rightContentLines, "", errorStyle.Render(wrapText("Notice: A similar skill named '"+similarMsg+"' is already installed.", rightWidth)))
+		}
+
+		var matchedDesc string
+		var matchedPreview string
+		for _, disc := range m.discovery {
+			if disc.Status == DiscoveryReady {
+				for _, ds := range disc.Skills {
+					if compat.NormalizeName(ds.Name) == compat.NormalizeName(s.DisplayName) || compat.NormalizeName(ds.Name) == compat.NormalizeName(s.Slug) {
+						if ds.Description != "" {
+							matchedDesc = ds.Description
+						}
+						if ds.Preview != "" {
+							matchedPreview = ds.Preview
+						}
+					}
+				}
+			}
+		}
+
+		if matchedDesc != "" {
+			rightContentLines = append(rightContentLines,
+				"",
+				sectionHeaderStyle.Render("Description:"),
+				wrapText(matchedDesc, rightWidth),
+			)
+		}
+		if matchedPreview != "" {
+			rightContentLines = append(rightContentLines,
+				"",
+				sectionHeaderStyle.Render("Preview:"),
+				wrapText(matchedPreview, rightWidth),
+			)
 		}
 
 		rightContentLines = append(rightContentLines, "")
@@ -2016,10 +2083,10 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 
 	// Help line
 	helpLineText := m.registryModalHelpLine()
-	helpLine := dimStyle.Render(helpLineText)
+	helpLine := dimStyle.Render("  " + helpLineText)
 
 	content := []string{
-		titleStyle.Render(" Skills.sh Registry Search "),
+		titleStyle.Render("  Skills.sh Registry Search"),
 		"",
 		body,
 		"",
@@ -2040,11 +2107,11 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 func (m appModel) registryModalHelpLine() string {
 	if !m.registryFocusList {
 		if m.registryError != nil && len(m.registryQuery) >= 2 {
-			return "type search · enter retry · tab select list · esc close"
+			return "type to search (typing active) · enter retry · tab navigate list · esc close"
 		}
-		return "type search · tab select list · esc close"
+		return "type to search (typing active) · tab navigate list · esc close"
 	}
-	parts := []string{"↑/↓ choose"}
+	parts := []string{"↑/↓/j/k choose (navigation active)"}
 	parts = append(parts, "space toggle")
 	selectedCount := m.registrySelectedCount()
 	if selectedCount > 0 {

@@ -476,7 +476,12 @@ func TestTUINoFalseNoSkillsFoundWhileSearchPending(t *testing.T) {
 	m.height = 30
 	m.registryModal = true
 	m.registryQuery = "a"
-	m.registryResults = nil
+	m.registryResults = []registry.Skill{{
+		DisplayName: "Old Result",
+		Slug:        "old",
+		Source:      "owner/old",
+	}}
+	m.registrySelected = 0
 	m.registryFocusList = false
 
 	modelTmp, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
@@ -486,11 +491,27 @@ func TestTUINoFalseNoSkillsFoundWhileSearchPending(t *testing.T) {
 	}
 
 	viewStr := m.View()
+	if strings.Contains(viewStr, "Old Result") {
+		t.Error("should hide old results while a new search is pending/loading")
+	}
 	if strings.Contains(viewStr, "No skills found in registry.") {
 		t.Error("should not show 'No skills found' while search is loading/pending")
 	}
 	if !strings.Contains(viewStr, "Searching registry...") {
 		t.Error("expected 'Searching registry...' to be shown while search is loading/pending")
+	}
+
+	// Verify navigation is blocked when loading
+	m.registryFocusList = true
+	m.registryResults = []registry.Skill{{
+		DisplayName: "Old",
+		Slug:        "old",
+	}}
+	// Pressing 'j' should be a no-op when loading
+	modelTmp, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = modelTmp.(appModel)
+	if m.registrySelected != 0 {
+		t.Errorf("expected navigation to be blocked during search loading, got selection=%d", m.registrySelected)
 	}
 }
 
@@ -634,15 +655,40 @@ func TestTUIRegistryListRenderingWithContextAndFocus(t *testing.T) {
 	m.registryModal = true
 	m.registryQuery = "xyz"
 	m.registryResults = []registry.Skill{
-		{DisplayName: "My Display Name", Slug: "my-display-name", Source: "github.com/my-org/my-repo"},
+		{DisplayName: "My Display Name", Slug: "my-display-name", Source: "https://github.com/my-org/my-repo/skills/my-folder"},
 	}
 	m.registrySelected = 0
 
-	// Test 1: Search focused (list unfocused) -> inactiveSelectedStyle (subtle background)
+	// Mock local discovery map to test description lookup matching
+	appDisc := SourceDiscovery{
+		Status: DiscoveryReady,
+		Skills: []DiscoveredSkill{
+			{Name: "My Display Name", Description: "This is a great skill description!"},
+		},
+	}
+	m.discovery = map[string]SourceDiscovery{
+		"https://github.com/my-org/my-repo/skills/my-folder": appDisc,
+	}
+
+	// Test 1: Search focused (list unfocused)
 	m.registryFocusList = false
 	viewStr1 := m.View()
 	if !strings.Contains(viewStr1, "My Display Name") || !strings.Contains(viewStr1, "my-org/my-repo") {
 		t.Fatal("expected view to contain display name and source context")
+	}
+	// Prefix for highlighted-only row starts with "› "
+	if !strings.Contains(viewStr1, "› My Display Name") {
+		t.Errorf("expected prefix '› ' for highlighted row, got view:\n%s", viewStr1)
+	}
+	// Verify parsed Repository/Folder and matched Description in Right Pane
+	if !strings.Contains(viewStr1, "Repository:  my-org/my-repo") {
+		t.Errorf("expected parsed Repository to be displayed, got view:\n%s", viewStr1)
+	}
+	if !strings.Contains(viewStr1, "Folder:      skills/my-folder") {
+		t.Errorf("expected parsed Folder to be displayed, got view:\n%s", viewStr1)
+	}
+	if !strings.Contains(viewStr1, "This is a great skill description!") {
+		t.Errorf("expected matched Description to be displayed, got view:\n%s", viewStr1)
 	}
 
 	// Test 2: List focused -> selectedStyle (active selected background)
