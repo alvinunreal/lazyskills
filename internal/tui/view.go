@@ -1603,10 +1603,10 @@ func (m appModel) confirmationOverlay(layout appLayout) string {
 	}
 	input := compat.SanitizeMetadata(m.confirmInput)
 	if input == "" {
-		input = dimStyle.Render(placeholder)
+		lines = append(lines, "", "> "+dimStyle.Render(placeholder))
+	} else {
+		lines = append(lines, "", "> "+input+"_")
 	}
-	cursor := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("┃")
-	lines = append(lines, "", "> "+input+cursor)
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(borderColor).Padding(1, 2).Width(52).Render(strings.Join(lines, "\n"))
 	return fitToScreen(lipgloss.Place(layout.Width, layout.Height, lipgloss.Center, lipgloss.Center, box), layout.Width, layout.Height)
 }
@@ -1725,10 +1725,6 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 	// Left pane header: Query input
 	var inputLine string
 	focusPrompt := "Search: "
-	cursor := ""
-	if !m.registryFocusList {
-		cursor = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("┃")
-	}
 
 	if m.registryFocusList {
 		// List is focused: input prompt is dim
@@ -1742,9 +1738,9 @@ func (m appModel) registryModalOverlay(layout appLayout) string {
 		// Search input is focused: prompt has high contrast
 		promptStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true).Render(focusPrompt)
 		if m.registryQuery == "" {
-			inputLine = promptStyled + dimStyle.Render("Type to search...") + cursor
+			inputLine = promptStyled + dimStyle.Render("Type to search...")
 		} else {
-			inputLine = promptStyled + m.registryQuery + cursor
+			inputLine = promptStyled + m.registryQuery + "_"
 		}
 	}
 
