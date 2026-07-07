@@ -2024,20 +2024,28 @@ func (m appModel) fetchRegistryPreviewCmd(key string, source string) tea.Cmd {
 			if err != nil {
 				continue
 			}
-			if resp.StatusCode == http.StatusOK {
-				bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-				resp.Body.Close()
-				if err == nil && len(bodyBytes) > 0 {
-					return registryPreviewMsg{
-						key:     key,
-						content: compat.SanitizePreviewContent(string(bodyBytes)),
-					}
-				}
+			content, ok := readRegistryPreviewResponse(resp)
+			if ok {
+				return registryPreviewMsg{key: key, content: content}
 			}
-			resp.Body.Close()
 		}
 		return registryPreviewMsg{key: key, content: ""}
 	}
+}
+
+func readRegistryPreviewResponse(resp *http.Response) (string, bool) {
+	if resp.Body == nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", false
+	}
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil || len(bodyBytes) == 0 {
+		return "", false
+	}
+	return compat.SanitizePreviewContent(string(bodyBytes)), true
 }
 
 func (m appModel) currentRegistryPreviewCmd() tea.Cmd {

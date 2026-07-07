@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+var htmlBlockTagRE = regexp.MustCompile(`(?i)</?(?:br|p|div|li|h1|h2|h3|h4)\b[^>]*>`)
 var htmlTagRE = regexp.MustCompile(`<[^>]+>`)
 
 func (m appModel) View() string {
@@ -780,9 +781,7 @@ func sanitizeRegistryPreviewContent(markdown string) string {
 	markdown = compat.SanitizePreviewContent(markdown)
 	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
 	markdown = strings.ReplaceAll(markdown, "\r", "\n")
-	for _, tag := range []string{"br", "p", "div", "li", "h1", "h2", "h3", "h4"} {
-		markdown = regexp.MustCompile(`(?i)</?`+tag+`\b[^>]*>`).ReplaceAllString(markdown, "\n")
-	}
+	markdown = htmlBlockTagRE.ReplaceAllString(markdown, "\n")
 	markdown = htmlTagRE.ReplaceAllString(markdown, "")
 	markdown = html.UnescapeString(markdown)
 	lines := strings.Split(markdown, "\n")
