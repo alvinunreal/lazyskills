@@ -7,6 +7,7 @@ import (
 
 	"github.com/alvinunreal/lazyskills/internal/compat"
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
 )
 
@@ -78,11 +79,31 @@ func formatMetaLine(key, val string, width int) string {
 }
 
 func truncate(s string, width int) string {
-	runes := []rune(s)
-	if width <= 1 || len(runes) <= width {
+	if width <= 1 || xansi.StringWidth(s) <= width {
 		return s
 	}
-	return string(runes[:width-1]) + "…"
+	return xansi.Truncate(s, width, "…")
+}
+
+func clampLineWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if xansi.StringWidth(s) <= width {
+		return s
+	}
+	return xansi.Truncate(s, width, "")
+}
+
+func clampBlockWidth(s string, width int) string {
+	if width <= 0 || s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = clampLineWidth(line, width)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func fitLines(s string, height int) string {
@@ -105,14 +126,7 @@ func fitToScreen(s string, width, height int) string {
 		lines = lines[:height]
 	}
 	for i, line := range lines {
-		for lipgloss.Width(line) > width {
-			runes := []rune(line)
-			if len(runes) == 0 {
-				break
-			}
-			line = string(runes[:len(runes)-1])
-		}
-		lines[i] = line
+		lines[i] = clampLineWidth(line, width)
 	}
 	return strings.Join(lines, "\n")
 }

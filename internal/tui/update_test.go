@@ -11,6 +11,8 @@ import (
 	"github.com/alvinunreal/lazyskills/internal/runner"
 	"github.com/alvinunreal/lazyskills/internal/selfupdate"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 func TestTUIFooterUpdateNotice(t *testing.T) {
@@ -750,6 +752,77 @@ func TestTUIRegistryPreviewScroll(t *testing.T) {
 	viewScrolled := m.View()
 	if !strings.Contains(viewScrolled, "line 06") && !strings.Contains(viewScrolled, "line 07") {
 		t.Fatalf("expected scrolled preview content, got:\n%s", viewScrolled)
+	}
+}
+
+func TestTUIRegistryResultsScrollWithSelection(t *testing.T) {
+	m := newModel("")
+	m.width = 120
+	m.height = 30
+	m.registryModal = true
+	m.registryQuery = "skill"
+	m.registryFocusList = true
+	m.registryPreviews = map[string]string{}
+	for i := 1; i <= 30; i++ {
+		m.registryResults = append(m.registryResults, registry.Skill{
+			DisplayName: fmt.Sprintf("Skill Result %02d", i),
+			Slug:        fmt.Sprintf("skill-result-%02d", i),
+			Source:      "https://github.com/example/skills",
+		})
+	}
+	m.registrySelected = 29
+
+	view := m.View()
+	if !strings.Contains(view, "> Skill Result 30") {
+		t.Fatalf("expected selected result to stay visible near bottom of long list, got:\n%s", view)
+	}
+	if !strings.Contains(view, "↑ ") {
+		t.Fatalf("expected registry result scroll indicator, got:\n%s", view)
+	}
+	if strings.Contains(view, "Skill Result 01") {
+		t.Fatalf("expected top result to be scrolled out of the visible list, got:\n%s", view)
+	}
+}
+
+func TestTUIRegistryModalDoesNotSoftWrapRows(t *testing.T) {
+	m := newModel("")
+	m.width = 110
+	m.height = 32
+	m.registryModal = true
+	m.registryQuery = "cloudf"
+	m.registryFocusList = true
+	m.registryPreviews = map[string]string{}
+	for i := 1; i <= 24; i++ {
+		m.registryResults = append(m.registryResults, registry.Skill{
+			DisplayName: fmt.Sprintf("cloudflare-email-service-with-a-very-long-display-name-%02d", i),
+			Slug:        fmt.Sprintf("cloudflare-email-service-with-a-very-long-slug-%02d", i),
+			Source:      "https://github.com/cloudflare/skills/tree/main/packages/skills/cloudflare-email-service-with-a-very-long-path",
+			Installs:    13274,
+		})
+	}
+	m.registrySelected = 18
+	key := m.registryResults[m.registrySelected].Source + "\x00" + m.registryResults[m.registrySelected].Slug
+	m.registryPreviews[key] = "# Cloudflare Skills\n" + strings.Repeat("https://example.com/this/is/a/very/long/url/that/must/not/soft/wrap/the/registry/modal\n", 8)
+
+	view := m.View()
+	for i, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(line); got > m.width {
+			t.Fatalf("registry modal line %d exceeds terminal width: got %d want <= %d\n%s", i+1, got, m.width, view)
+		}
+	}
+}
+
+func TestTUIANSIClampKeepsStyledLinesValid(t *testing.T) {
+	styled := selectedStyle.Render(strings.Repeat("cloudflare-email-service ", 12))
+	clamped := clampLineWidth(styled, 32)
+	if got := xansi.StringWidth(clamped); got > 32 {
+		t.Fatalf("clamped styled line exceeds target width: got %d", got)
+	}
+	if strings.ContainsRune(clamped, '\uFFFD') {
+		t.Fatalf("clamped styled line contains replacement characters: %q", clamped)
+	}
+	if strings.Contains(clamped, "\x1b[") && !strings.Contains(clamped, "\x1b[0m") {
+		t.Fatalf("clamped styled line appears to have lost ANSI reset: %q", clamped)
 	}
 }
 

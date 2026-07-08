@@ -2305,8 +2305,8 @@ func TestRichSourceInventoryMetadataAndActions(t *testing.T) {
 	if !strings.Contains(prevJoined, "press d to scan this source") {
 		t.Errorf("expected available scan hint in preview, got %q", prevJoined)
 	}
-	if !strings.Contains(prevJoined, "enter to browse · d to scan") {
-		t.Errorf("expected action hint in preview, got %q", prevJoined)
+	if strings.Contains(prevJoined, "enter to browse") {
+		t.Errorf("source preview should not duplicate footer actions, got %q", prevJoined)
 	}
 
 	// 3. Assert currentActions for source row
