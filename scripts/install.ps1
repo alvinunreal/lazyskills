@@ -10,6 +10,21 @@ $Owner = "alvinunreal"
 $Repo = "lazyskills"
 $Binary = "lazyskills.exe"
 
+function Prompt-StarRepo {
+  if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { return }
+  if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) { return }
+
+  $answer = Read-Host "Would you like to star ${Owner}/${Repo} on GitHub? [Y/n]"
+  if ($answer -eq "" -or $answer -match "^(?i:y|yes)$") {
+    & gh repo star "${Owner}/${Repo}" | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+      Write-Host "Starred ${Owner}/${Repo}."
+    } else {
+      Write-Warning "Could not star ${Owner}/${Repo} with GitHub CLI; continuing."
+    }
+  }
+}
+
 $osArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 $processorArchitecture = $env:PROCESSOR_ARCHITECTURE
 
@@ -68,6 +83,8 @@ try {
   }
 
   & (Join-Path $BinDir $Binary) version
+
+  Prompt-StarRepo
 } finally {
   Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

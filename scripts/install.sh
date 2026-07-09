@@ -46,6 +46,29 @@ need() {
 need curl
 need tar
 
+prompt_star_repo() {
+  if ! command -v gh >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    return 0
+  fi
+
+  printf "Would you like to star ${OWNER}/${REPO} on GitHub? [Y/n] " >/dev/tty
+  IFS= read -r answer </dev/tty || return 0
+
+  case "$answer" in
+    ""|[Yy]|[Yy][Ee][Ss])
+      if gh repo star "${OWNER}/${REPO}" >/dev/null 2>&1; then
+        echo "Starred ${OWNER}/${REPO}."
+      else
+        echo "Note: could not star ${OWNER}/${REPO} with GitHub CLI; continuing." >&2
+      fi
+      ;;
+  esac
+}
+
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
@@ -120,3 +143,5 @@ case ":$PATH:" in
   *":$BINDIR:"*) ;;
   *) echo "Note: ${BINDIR} is not on your PATH." ;;
 esac
+
+prompt_star_repo
