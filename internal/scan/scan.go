@@ -405,6 +405,93 @@ func scanLocationRecords(loc agents.Location) []scannedLocationRecord {
 			},
 		})
 	}
+	// Discover skills nested deeper than the immediate children above. A
+	// vendored bundle directory (e.g. ~/.agents/skills/medsci/skills/<name>)
+	// ships its sub-skills below the one-level scan horizon; without this pass
+	// they are invisible to the inventory even though they are in scope on
+	// disk. Nested SKILL.md files at depth > 1 inherit the location's scope
+	// (so a bundle inside the global canonical root registers its sub-skills as
+	// global). Symlinks in the root are resolved so a symlinked skills directory
+	// is still walked. Skip patterns + a depth cap keep the walk bounded.
+	records = scanNestedSkills(loc, records)
+	return records
+}
+
+// scanNestedSkills appends records for SKILL.md files under loc.Root that are
+// not immediate children (depth > 1). Immediate children are already handled by
+// the one-level loop in scanLocationRecords; this only adds deeper finds so
+// they are not double-counted. The root is symlink-resolved before walking.
+func scanNestedSkills(loc agents.Location, records []scannedLocationRecord) []scannedLocationRecord {
+	root, err := filepath.EvalSymlinks(loc.Root)
+	if err != nil {
+		return records
+	}
+	// Track skill dirs already recorded by the one-level scan to avoid dups.
+	seen := make(map[string]bool, len(records))
+	for _, r := range records {
+		if r.skillPath != "" {
+			seen[filepath.Clean(filepath.Dir(r.skillPath))] = true
+		}
+	}
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if name == ".git" || name == "node_modules" || name == "vendor" || name == ".agents" || name == ".slim" || strings.HasPrefix(name, ".") {
+				return filepath.SkipDir
+			}
+			rel, relErr := filepath.Rel(root, path)
+			if relErr == nil {
+				depth := len(strings.Split(filepath.ToSlash(rel), "/"))
+				if depth > 5 {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if d.Name() != "SKILL.md" {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		depth := len(strings.Split(filepath.ToSlash(rel), "/"))
+		if depth <= 1 {
+			return nil // immediate child — already handled by the one-level scan
+		}
+		skillDir := filepath.Dir(path)
+		if seen[filepath.Clean(skillDir)] {
+			return nil
+		}
+		doc, perr := frontmatter.ParseFile(path)
+		if perr != nil {
+			return nil
+		}
+		status := model.StatusCopy
+		canonicalPath := ""
+		if loc.Canonical {
+			status = model.StatusCanonical
+			canonicalPath = skillDir
+		}
+		records = append(records, scannedLocationRecord{
+			keyHint:       filepath.Base(skillDir),
+			name:          doc.Name,
+			description:   doc.Description,
+			skillPath:     path,
+			preview:       doc.Raw,
+			canonicalPath: canonicalPath,
+			observed: model.ObservedPath{
+				Path:   skillDir,
+				Scope:  loc.Scope,
+				Agent:  loc.AgentName,
+				Status: status,
+			},
+		})
+		return nil
+	})
 	return records
 }
 
