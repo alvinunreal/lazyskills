@@ -411,8 +411,11 @@ func scanLocationRecords(loc agents.Location) []scannedLocationRecord {
 	// they are invisible to the inventory even though they are in scope on
 	// disk. Nested SKILL.md files at depth > 1 inherit the location's scope
 	// (so a bundle inside the global canonical root registers its sub-skills as
-	// global). Symlinks in the root are resolved so a symlinked skills directory
-	// is still walked. Skip patterns + a depth cap keep the walk bounded.
+	// global). A directory that bundles sub-skills is itself a bundle, not a
+	// skill, so its own record (whether a real root SKILL.md or a
+	// missing_skill_md placeholder) is dropped. Symlinks in the root are
+	// resolved so a symlinked skills directory is still walked. Skip patterns +
+	// a depth cap keep the walk bounded.
 	records = scanNestedSkills(loc, records)
 	return records
 }
@@ -421,6 +424,8 @@ func scanLocationRecords(loc agents.Location) []scannedLocationRecord {
 // not immediate children (depth > 1). Immediate children are already handled by
 // the one-level loop in scanLocationRecords; this only adds deeper finds so
 // they are not double-counted. The root is symlink-resolved before walking.
+// An immediate-child directory that contains nested SKILL.md files is a bundle
+// (not a skill itself); its record is dropped from the returned slice.
 func scanNestedSkills(loc agents.Location, records []scannedLocationRecord) []scannedLocationRecord {
 	root, err := filepath.EvalSymlinks(loc.Root)
 	if err != nil {
@@ -433,6 +438,11 @@ func scanNestedSkills(loc agents.Location, records []scannedLocationRecord) []sc
 			seen[filepath.Clean(filepath.Dir(r.skillPath))] = true
 		}
 	}
+	// bundleDirs collects immediate-child directories of loc.Root that contain
+	// nested SKILL.md files. Keyed by loc.Root-joined path so it matches the
+	// one-level records' observed.Path (which uses loc.Root, not the resolved
+	// root).
+	bundleDirs := map[string]bool{}
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -458,10 +468,18 @@ func scanNestedSkills(loc agents.Location, records []scannedLocationRecord) []sc
 		if relErr != nil {
 			return nil
 		}
-		depth := len(strings.Split(filepath.ToSlash(rel), "/"))
-		if depth <= 1 {
-			return nil // immediate child — already handled by the one-level scan
+		parts := strings.Split(filepath.ToSlash(rel), "/")
+		// A SKILL.md is "nested" (not an immediate child) only when its skill
+		// directory sits below root's first level. The file's component count is
+		// one more than its dir depth (the trailing "SKILL.md"), so a skill dir
+		// at depth > 1 means len(parts) > 2. len(parts) == 2 is an immediate
+		// child (root/<name>/SKILL.md) already handled by the one-level scan.
+		if len(parts) <= 2 {
+			return nil
 		}
+		// This nested SKILL.md lives under an immediate-child directory of
+		// loc.Root; that child is a bundle, not a skill.
+		bundleDirs[filepath.Clean(filepath.Join(loc.Root, parts[0]))] = true
 		skillDir := filepath.Dir(path)
 		if seen[filepath.Clean(skillDir)] {
 			return nil
@@ -492,6 +510,17 @@ func scanNestedSkills(loc agents.Location, records []scannedLocationRecord) []sc
 		})
 		return nil
 	})
+	// Drop records for bundle directories: a directory that bundles sub-skills
+	// is not itself a skill, whether or not it has a root SKILL.md.
+	if len(bundleDirs) > 0 {
+		filtered := make([]scannedLocationRecord, 0, len(records))
+		for _, r := range records {
+			if !bundleDirs[filepath.Clean(r.observed.Path)] {
+				filtered = append(filtered, r)
+			}
+		}
+		records = filtered
+	}
 	return records
 }
 
