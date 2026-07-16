@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/alvinunreal/lazyskills/internal/model"
 )
@@ -292,7 +293,13 @@ func LocationsWithEnv(cwd string, e Env) []Location {
 	}
 	for _, a := range registry {
 		projectRoot := filepath.Join(cwd, filepath.FromSlash(a.ProjectDir))
-		if !homeIsCwd && !globalRoots[filepath.Clean(projectRoot)] {
+		// Skip project locations that are, or live inside, a global skills root.
+		// Otherwise running from within the global tree (e.g. inside
+		// ~/.agents/skills/<bundle>) makes a cwd-relative project dir physically
+		// coincide with a global bundle's contents and mislabels those skills as
+		// project-scoped. homeIsCwd handles the cwd==home special case; this guard
+		// covers the general "project root under a global root" overlap.
+		if !homeIsCwd && !isUnderAnyGlobalRoot(filepath.Clean(projectRoot), globalRoots) {
 			add(Location{Root: projectRoot, Scope: model.ScopeProject, AgentName: a.Name, Canonical: a.Universal})
 		}
 		if a.Universal && a.SupportsGlobal {
@@ -303,4 +310,20 @@ func LocationsWithEnv(cwd string, e Env) []Location {
 		}
 	}
 	return out
+}
+
+// isUnderAnyGlobalRoot reports whether path is equal to, or nested inside, any
+// of the global skills roots. Matching is path-boundary aware so that
+// ~/.agents/skills-foo is not treated as inside ~/.agents/skills.
+func isUnderAnyGlobalRoot(path string, roots map[string]bool) bool {
+	for r := range roots {
+		r = filepath.Clean(r)
+		if path == r {
+			return true
+		}
+		if strings.HasPrefix(path, r+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
