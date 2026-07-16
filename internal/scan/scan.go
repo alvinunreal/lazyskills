@@ -423,45 +423,21 @@ func scanLocationRecords(loc agents.Location) []scannedLocationRecord {
 // scanNestedSkills appends records for SKILL.md files under loc.Root that are
 // not immediate children (depth > 1). Immediate children are already handled by
 // the one-level loop in scanLocationRecords; this only adds deeper finds so
-// they are not double-counted. The root is symlink-resolved before walking.
-// An immediate-child directory that contains nested SKILL.md files is a bundle
-// (not a skill itself); its record is dropped from the returned slice.
+// they are not double-counted. The root is symlink-resolved before walking, but
+// records retain paths rooted at loc.Root. An immediate-child directory that
+// contains nested SKILL.md files is a bundle (not a skill itself); its record is
+// dropped from the returned slice.
 func scanNestedSkills(loc agents.Location, records []scannedLocationRecord) []scannedLocationRecord {
 	root, err := filepath.EvalSymlinks(loc.Root)
 	if err != nil {
 		return records
 	}
-	// Track skill dirs already recorded by the one-level scan to avoid dups.
-	seen := make(map[string]bool, len(records))
-	for _, r := range records {
-		if r.skillPath != "" {
-			seen[filepath.Clean(filepath.Dir(r.skillPath))] = true
-		}
-	}
 	// bundleDirs collects immediate-child directories of loc.Root that contain
-	// nested SKILL.md files. Keyed by loc.Root-joined path so it matches the
-	// one-level records' observed.Path (which uses loc.Root, not the resolved
-	// root).
+	// nested SKILL.md files. Keyed by logical paths so it matches the one-level
+	// records' observed.Path.
 	bundleDirs := map[string]bool{}
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if name == ".git" || name == "node_modules" || name == "vendor" || name == ".agents" || name == ".slim" || strings.HasPrefix(name, ".") {
-				return filepath.SkipDir
-			}
-			rel, relErr := filepath.Rel(root, path)
-			if relErr == nil {
-				depth := len(strings.Split(filepath.ToSlash(rel), "/"))
-				if depth > 5 {
-					return filepath.SkipDir
-				}
-			}
-			return nil
-		}
-		if d.Name() != "SKILL.md" {
 			return nil
 		}
 		rel, relErr := filepath.Rel(root, path)
@@ -469,6 +445,79 @@ func scanNestedSkills(loc agents.Location, records []scannedLocationRecord) []sc
 			return nil
 		}
 		parts := strings.Split(filepath.ToSlash(rel), "/")
+		logicalPath := filepath.Join(loc.Root, filepath.FromSlash(rel))
+
+		// WalkDir does not follow symlinks. A symlinked directory can still be a
+		// nested skill, but it must not become a traversal entry point. Symlinked
+		// files fall through to ordinary SKILL.md handling below.
+		if d.Type()&os.ModeSymlink != 0 {
+			st, statErr := os.Stat(path)
+			if statErr == nil && st.IsDir() {
+				name := d.Name()
+				if len(parts) <= 1 || name == ".git" || name == "node_modules" || name == "vendor" || name == ".agents" || name == ".slim" || strings.HasPrefix(name, ".") || len(parts) > 5 {
+					return nil
+				}
+				skillFile := filepath.Join(path, "SKILL.md")
+				logicalSkillFile := filepath.Join(logicalPath, "SKILL.md")
+				if _, skillErr := os.Stat(skillFile); errors.Is(skillErr, os.ErrNotExist) {
+					return nil
+				}
+				bundleDirs[filepath.Clean(filepath.Join(loc.Root, parts[0]))] = true
+				target, _ := os.Readlink(path)
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(filepath.Dir(logicalPath), target)
+				}
+				observed := model.ObservedPath{
+					Path:       logicalPath,
+					Scope:      loc.Scope,
+					Agent:      loc.AgentName,
+					Status:     model.StatusSymlink,
+					TargetPath: filepath.Clean(target),
+				}
+				doc, parseErr := frontmatter.ParseFile(skillFile)
+				if parseErr != nil {
+					issueType := "invalid_frontmatter"
+					if errors.Is(parseErr, os.ErrNotExist) {
+						issueType = "missing_skill_md"
+					}
+					records = append(records, scannedLocationRecord{
+						keyHint:      filepath.Base(logicalPath),
+						name:         filepath.Base(logicalPath),
+						observed:     observed,
+						healthIssues: []model.HealthIssue{{Type: issueType, Severity: "error", Message: fmt.Sprintf("invalid SKILL.md: %v", parseErr), Path: logicalSkillFile}},
+					})
+					return nil
+				}
+				canonicalPath := ""
+				if loc.Canonical {
+					canonicalPath = logicalPath
+				}
+				records = append(records, scannedLocationRecord{
+					keyHint:       filepath.Base(logicalPath),
+					name:          doc.Name,
+					description:   doc.Description,
+					skillPath:     logicalSkillFile,
+					preview:       doc.Raw,
+					canonicalPath: canonicalPath,
+					observed:      observed,
+				})
+				return nil
+			}
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if name == ".git" || name == "node_modules" || name == "vendor" || name == ".agents" || name == ".slim" || strings.HasPrefix(name, ".") {
+				return filepath.SkipDir
+			}
+			depth := len(parts)
+			if depth > 5 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != "SKILL.md" {
+			return nil
+		}
 		// A SKILL.md is "nested" (not an immediate child) only when its skill
 		// directory sits below root's first level. The file's component count is
 		// one more than its dir depth (the trailing "SKILL.md"), so a skill dir
@@ -480,29 +529,38 @@ func scanNestedSkills(loc agents.Location, records []scannedLocationRecord) []sc
 		// This nested SKILL.md lives under an immediate-child directory of
 		// loc.Root; that child is a bundle, not a skill.
 		bundleDirs[filepath.Clean(filepath.Join(loc.Root, parts[0]))] = true
-		skillDir := filepath.Dir(path)
-		if seen[filepath.Clean(skillDir)] {
-			return nil
+		logicalSkillDir := filepath.Dir(logicalPath)
+		status := model.StatusCopy
+		if loc.Canonical {
+			status = model.StatusCanonical
 		}
 		doc, perr := frontmatter.ParseFile(path)
 		if perr != nil {
+			issueType := "invalid_frontmatter"
+			if errors.Is(perr, os.ErrNotExist) {
+				issueType = "missing_skill_md"
+			}
+			records = append(records, scannedLocationRecord{
+				keyHint:      filepath.Base(logicalSkillDir),
+				name:         filepath.Base(logicalSkillDir),
+				observed:     model.ObservedPath{Path: logicalSkillDir, Scope: loc.Scope, Agent: loc.AgentName, Status: status},
+				healthIssues: []model.HealthIssue{{Type: issueType, Severity: "error", Message: fmt.Sprintf("invalid SKILL.md: %v", perr), Path: logicalPath}},
+			})
 			return nil
 		}
-		status := model.StatusCopy
 		canonicalPath := ""
 		if loc.Canonical {
-			status = model.StatusCanonical
-			canonicalPath = skillDir
+			canonicalPath = logicalSkillDir
 		}
 		records = append(records, scannedLocationRecord{
-			keyHint:       filepath.Base(skillDir),
+			keyHint:       filepath.Base(logicalSkillDir),
 			name:          doc.Name,
 			description:   doc.Description,
-			skillPath:     path,
+			skillPath:     logicalPath,
 			preview:       doc.Raw,
 			canonicalPath: canonicalPath,
 			observed: model.ObservedPath{
-				Path:   skillDir,
+				Path:   logicalSkillDir,
 				Scope:  loc.Scope,
 				Agent:  loc.AgentName,
 				Status: status,

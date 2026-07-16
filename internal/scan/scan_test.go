@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/alvinunreal/lazyskills/internal/agents"
 	"github.com/alvinunreal/lazyskills/internal/model"
 )
 
@@ -621,5 +623,161 @@ func TestScanDisabledRelativeSymlinkDoesNotReportBroken(t *testing.T) {
 	}
 	if found.Preview == "" {
 		t.Fatal("expected disabled symlink target preview to be parsed")
+	}
+}
+
+func TestNestedSkillsUnderSymlinkedRootKeepLogicalPaths(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+	target := filepath.Join(t.TempDir(), "skills")
+	writeSkill(t, filepath.Join(target, "direct"), "Direct", "immediate")
+	writeSkill(t, filepath.Join(target, "bundle", "one"), "One", "first")
+	writeSkill(t, filepath.Join(target, "bundle", "two"), "Two", "second")
+	root := filepath.Join(cwd, ".agents", "skills")
+	if err := os.MkdirAll(filepath.Dir(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, root); err != nil {
+		t.Fatal(err)
+	}
+
+	records := scanLocationRecords(agents.Location{
+		Root:      root,
+		Scope:     model.ScopeProject,
+		AgentName: "universal",
+		Canonical: true,
+	})
+	if len(records) != 3 {
+		t.Fatalf("expected immediate and nested skills, got %#v", records)
+	}
+	expectedPaths := map[string]string{
+		"Direct": filepath.Join(root, "direct"),
+		"One":    filepath.Join(root, "bundle", "one"),
+		"Two":    filepath.Join(root, "bundle", "two"),
+	}
+	seen := map[string]bool{}
+	for _, record := range records {
+		expectedPath, ok := expectedPaths[record.name]
+		if !ok {
+			t.Fatalf("unexpected skill record: %#v", record)
+		}
+		if seen[record.name] {
+			t.Fatalf("expected %s exactly once, got %#v", record.name, records)
+		}
+		seen[record.name] = true
+		if record.observed.Path != expectedPath {
+			t.Fatalf("expected logical observed path %q, got %#v", expectedPath, record.observed)
+		}
+		if strings.Contains(record.skillPath, target) || strings.Contains(record.canonicalPath, target) {
+			t.Fatalf("resolved target leaked into skill paths: %#v", record)
+		}
+		if strings.Contains(record.observed.Path, target) {
+			t.Fatalf("resolved target leaked into observed path: %#v", record.observed)
+		}
+	}
+	if len(seen) != len(expectedPaths) {
+		t.Fatalf("expected all logical skills exactly once, got %#v", records)
+	}
+}
+
+func TestNestedSymlinkedSkillIsRecordedWithoutTraversal(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+	target := filepath.Join(t.TempDir(), "linked-skill")
+	writeSkill(t, target, "Linked", "linked skill")
+	root := filepath.Join(cwd, ".agents", "skills")
+	link := filepath.Join(root, "bundle", "linked")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Skills) != 1 || res.Skills[0].Name != "Linked" {
+		t.Fatalf("expected only linked nested skill, got %#v", res.Skills)
+	}
+	sk := res.Skills[0]
+	if sk.SkillPath != filepath.Join(link, "SKILL.md") || sk.CanonicalPath != link {
+		t.Fatalf("expected logical canonical paths, got %#v", sk)
+	}
+	if hasIssue(sk.HealthIssues, "ghost_agent_skill") {
+		t.Fatalf("canonical nested symlink should not be a ghost skill: %#v", sk.HealthIssues)
+	}
+	for _, observed := range sk.ObservedPaths {
+		if observed.Path != link || observed.Status != model.StatusSymlink || observed.TargetPath != target {
+			t.Fatalf("unexpected nested symlink observation: %#v", observed)
+		}
+	}
+}
+
+func TestNestedSymlinkedSkillFileIsDiscoveredNormally(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+	source := filepath.Join(t.TempDir(), "source")
+	writeSkill(t, source, "Linked File", "linked file skill")
+	child := filepath.Join(cwd, ".agents", "skills", "bundle", "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(source, "SKILL.md"), filepath.Join(child, "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Skills) != 1 || res.Skills[0].Name != "Linked File" {
+		t.Fatalf("expected symlinked SKILL.md to be discovered, got %#v", res.Skills)
+	}
+	if res.Skills[0].ObservedPaths[0].Status != model.StatusCanonical {
+		t.Fatalf("symlinked SKILL.md should use ordinary canonical handling: %#v", res.Skills[0].ObservedPaths)
+	}
+}
+
+func TestMalformedNestedSkillReportsDiagnosticAndSuppressesBundle(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+	root := filepath.Join(cwd, ".agents", "skills")
+	bundle := filepath.Join(root, "bundle")
+	writeSkill(t, bundle, "Bundle", "container")
+	bad := filepath.Join(bundle, "bad")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "SKILL.md"), []byte("---\nname: 123\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Skills) != 1 || res.Skills[0].Name != "bad" {
+		t.Fatalf("expected malformed nested skill and no bundle record, got %#v", res.Skills)
+	}
+	if !hasIssue(res.Skills[0].HealthIssues, "invalid_frontmatter") {
+		t.Fatalf("expected invalid_frontmatter issue, got %#v", res.Skills[0].HealthIssues)
+	}
+}
+
+func TestNestedBundleDiscoversChildrenAndSuppressesContainer(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+	bundle := filepath.Join(cwd, ".agents", "skills", "bundle")
+	writeSkill(t, bundle, "Bundle", "container")
+	writeSkill(t, filepath.Join(bundle, "child"), "Child", "nested skill")
+
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Skills) != 1 || res.Skills[0].Name != "Child" {
+		t.Fatalf("expected only nested child skill, got %#v", res.Skills)
 	}
 }
