@@ -781,3 +781,69 @@ func TestNestedBundleDiscoversChildrenAndSuppressesContainer(t *testing.T) {
 		t.Fatalf("expected only nested child skill, got %#v", res.Skills)
 	}
 }
+
+// TestSharedScopeRootSymlinkFlagsOnlyTheSymlinkedAgent covers the
+// alvinunreal/lazyskills#34 scenario: an agent's scope root directory is
+// itself a symlink into another agent's canonical skills tree (e.g.
+// ~/.codex/skills -> ~/.claude/skills). The skill must remain visible to
+// both agents, but only the observation reached through the symlink is
+// flagged as shared/non-owned.
+func TestSharedScopeRootSymlinkFlagsOnlyTheSymlinkedAgent(t *testing.T) {
+	home := withHome(t)
+	cwd := t.TempDir()
+
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	writeSkill(t, filepath.Join(claudeSkills, "shared"), "Shared", "shared skill")
+
+	codexHome := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(claudeSkills, filepath.Join(codexHome, "skills")); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sk *model.Skill
+	for _, s := range res.Skills {
+		if s.Name == "Shared" {
+			sk = s
+		}
+	}
+	if sk == nil {
+		t.Fatalf("expected Shared skill in scan results, got %#v", res.Skills)
+	}
+
+	var codexObserved, claudeObserved *model.ObservedPath
+	for i := range sk.ObservedPaths {
+		obs := &sk.ObservedPaths[i]
+		switch obs.Agent {
+		case "codex":
+			codexObserved = obs
+		case "claude-code":
+			claudeObserved = obs
+		}
+	}
+	if codexObserved == nil || claudeObserved == nil {
+		t.Fatalf("expected both codex and claude-code observed paths, got %#v", sk.ObservedPaths)
+	}
+	if !codexObserved.SharedRoot {
+		t.Fatalf("expected codex observed path to be flagged shared root: %#v", codexObserved)
+	}
+	if claudeObserved.SharedRoot {
+		t.Fatalf("expected claude-code observed path to not be flagged shared root: %#v", claudeObserved)
+	}
+
+	if !hasIssue(sk.HealthIssues, "shared_scope_root") {
+		t.Fatalf("expected shared_scope_root health issue, got %#v", sk.HealthIssues)
+	}
+	for _, issue := range sk.HealthIssues {
+		if issue.Type == "shared_scope_root" && issue.Severity != "warning" {
+			t.Fatalf("expected shared_scope_root severity warning, got %#v", issue)
+		}
+	}
+}

@@ -1425,9 +1425,27 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 			}
 		}
 
+		// safety: never move a path reached through a symlinked, shared scope
+		// root. The preview builders already refuse to offer these, but this
+		// re-checks live observations from the current scan so a stale or
+		// forged action can't bypass the gate and mutate a canonical repo
+		// shared by other agents.
+		sharedRootPaths := map[string]bool{}
+		for _, sk := range m.result.Skills {
+			for _, obs := range sk.ObservedPaths {
+				if obs.SharedRoot {
+					sharedRootPaths[obs.Path] = true
+				}
+			}
+		}
+
 		// Preflight validation
 		var errs []string
 		for _, item := range plan {
+			if sharedRootPaths[item.src] {
+				errs = append(errs, fmt.Sprintf("path is reached through a symlinked skills root; refusing to move: %s", compat.SanitizeMetadata(item.src)))
+				continue
+			}
 			// Check if source exists
 			_, err := os.Lstat(item.src)
 			if err != nil {
@@ -1531,6 +1549,9 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 			for _, op := range sk.ObservedPaths {
 				if op.Status != model.StatusBrokenSymlink {
 					continue // safety: never touch working symlinks or canonical files
+				}
+				if op.SharedRoot {
+					continue // safety: never delete symlinks reached through a shared scope root
 				}
 				info, err := os.Lstat(op.Path)
 				if err != nil {
@@ -1710,27 +1731,37 @@ func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, 
 	}
 	toggleActions := []actions.CommandPreview{}
 	if m.agent != "" {
-		var activePaths []string
-		var disabledPaths []string
+		var activeObs []model.ObservedPath
+		var disabledObs []model.ObservedPath
 		for _, obs := range sk.ObservedPaths {
 			if obs.Agent == m.agent {
 				if obs.Status == model.StatusDisabled {
-					disabledPaths = append(disabledPaths, obs.Path, obs.TargetPath)
+					disabledObs = append(disabledObs, obs)
 				} else {
-					activePaths = append(activePaths, obs.Path)
+					activeObs = append(activeObs, obs)
 				}
 			}
 		}
 
-		if len(activePaths) > 0 {
-			for _, path := range activePaths {
+		if len(activeObs) > 0 {
+			for _, obs := range activeObs {
+				path := obs.Path
 				sharingAgents := []string{}
 				for _, other := range sk.ObservedPaths {
 					if other.Path == path {
 						sharingAgents = append(sharingAgents, other.Agent)
 					}
 				}
-				if len(sharingAgents) > 1 {
+				switch {
+				case obs.SharedRoot:
+					toggleActions = append(toggleActions, actions.CommandPreview{
+						ID:          "disable_skill",
+						Title:       fmt.Sprintf("Disable skill for agent %s", m.agentLabel()),
+						Description: "This skill cannot be disabled because its files are reached through a symlinked, shared scope root.",
+						Available:   false,
+						Reason:      actions.SharedRootReason(path),
+					})
+				case len(sharingAgents) > 1:
 					reason := fmt.Sprintf("This path is shared by multiple agents (%s). Use scope-level disable instead.", strings.Join(sharingAgents, ", "))
 					toggleActions = append(toggleActions, actions.CommandPreview{
 						ID:          "disable_skill",
@@ -1739,7 +1770,7 @@ func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, 
 						Available:   false,
 						Reason:      reason,
 					})
-				} else {
+				default:
 					toggleActions = append(toggleActions, actions.CommandPreview{
 						ID:          "disable_skill",
 						Title:       fmt.Sprintf("Disable skill for agent %s", m.agentLabel()),
@@ -1756,10 +1787,10 @@ func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, 
 			}
 		}
 
-		if len(disabledPaths) > 0 {
-			for i := 0; i < len(disabledPaths); i += 2 {
-				src := disabledPaths[i]
-				dest := disabledPaths[i+1]
+		if len(disabledObs) > 0 {
+			for _, obs := range disabledObs {
+				src := obs.Path
+				dest := obs.TargetPath
 
 				sharingAgents := []string{}
 				for _, other := range sk.ObservedPaths {
@@ -1768,7 +1799,16 @@ func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, 
 					}
 				}
 
-				if len(sharingAgents) > 1 {
+				switch {
+				case obs.SharedRoot:
+					toggleActions = append(toggleActions, actions.CommandPreview{
+						ID:          "enable_skill",
+						Title:       fmt.Sprintf("Enable skill for agent %s", m.agentLabel()),
+						Description: "This skill cannot be enabled because its files are reached through a symlinked, shared scope root.",
+						Available:   false,
+						Reason:      actions.SharedRootReason(src),
+					})
+				case len(sharingAgents) > 1:
 					reason := fmt.Sprintf("This path is shared by multiple agents (%s). Use scope-level enable instead.", strings.Join(sharingAgents, ", "))
 					toggleActions = append(toggleActions, actions.CommandPreview{
 						ID:          "enable_skill",
@@ -1777,7 +1817,7 @@ func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, 
 						Available:   false,
 						Reason:      reason,
 					})
-				} else {
+				default:
 					toggleActions = append(toggleActions, actions.CommandPreview{
 						ID:          "enable_skill",
 						Title:       fmt.Sprintf("Enable skill for agent %s", m.agentLabel()),
@@ -1799,23 +1839,52 @@ func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, 
 		seenActive := map[string]bool{}
 		var disabledPaths []string
 		seenDisabled := map[string]bool{}
+		hasSharedActive, hasSharedDisabled := false, false
+		var sharedActivePath, sharedDisabledPath string
 		for _, obs := range sk.ObservedPaths {
-			if obs.Scope == sk.Scope {
-				if obs.Status == model.StatusDisabled {
-					if !seenDisabled[obs.Path] {
-						seenDisabled[obs.Path] = true
-						disabledPaths = append(disabledPaths, obs.Path, obs.TargetPath)
+			if obs.Scope != sk.Scope {
+				continue
+			}
+			if obs.Status == model.StatusDisabled {
+				if obs.SharedRoot {
+					if !hasSharedDisabled {
+						hasSharedDisabled = true
+						sharedDisabledPath = obs.Path
 					}
-				} else {
-					if !seenActive[obs.Path] {
-						seenActive[obs.Path] = true
-						activePaths = append(activePaths, obs.Path)
+					continue
+				}
+				if !seenDisabled[obs.Path] {
+					seenDisabled[obs.Path] = true
+					disabledPaths = append(disabledPaths, obs.Path, obs.TargetPath)
+				}
+			} else {
+				if obs.SharedRoot {
+					if !hasSharedActive {
+						hasSharedActive = true
+						sharedActivePath = obs.Path
 					}
+					continue
+				}
+				if !seenActive[obs.Path] {
+					seenActive[obs.Path] = true
+					activePaths = append(activePaths, obs.Path)
 				}
 			}
 		}
 
-		if len(activePaths) > 0 {
+		// A scope-level move touches every agent root at once; if any of
+		// them is reached through a shared scope root, refuse the whole
+		// action rather than silently moving the remaining subset.
+		switch {
+		case hasSharedActive:
+			toggleActions = append(toggleActions, actions.CommandPreview{
+				ID:          "disable_skill",
+				Title:       fmt.Sprintf("Disable skill (scope: %s)", sk.Scope),
+				Description: "This skill cannot be disabled across scope because one or more directories are reached through a symlinked, shared scope root.",
+				Available:   false,
+				Reason:      actions.SharedRootReason(sharedActivePath),
+			})
+		case len(activePaths) > 0:
 			toggleActions = append(toggleActions, actions.CommandPreview{
 				ID:          "disable_skill",
 				Title:       fmt.Sprintf("Disable skill (scope: %s)", sk.Scope),
@@ -1830,7 +1899,15 @@ func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, 
 			})
 		}
 
-		if len(disabledPaths) > 0 {
+		if hasSharedDisabled {
+			toggleActions = append(toggleActions, actions.CommandPreview{
+				ID:          "enable_skill",
+				Title:       fmt.Sprintf("Enable skill (scope: %s)", sk.Scope),
+				Description: "This skill cannot be enabled across scope because one or more disabled directories are reached through a symlinked, shared scope root.",
+				Available:   false,
+				Reason:      actions.SharedRootReason(sharedDisabledPath),
+			})
+		} else if len(disabledPaths) > 0 {
 			toggleActions = append(toggleActions, actions.CommandPreview{
 				ID:          "enable_skill",
 				Title:       fmt.Sprintf("Enable skill (scope: %s)", sk.Scope),
@@ -1858,10 +1935,30 @@ func (m appModel) sourceEnableDisableActions(skills []*model.Skill) []actions.Co
 	var disabledPaths []string
 	seenDisabled := map[string]bool{}
 	sharedActive, sharedDisabled := map[string][]string{}, map[string][]string{}
+	hasSharedRootActive, hasSharedRootDisabled := false, false
+	var sharedRootActivePath, sharedRootDisabledPath string
 
 	for _, sk := range skills {
 		for _, obs := range sk.ObservedPaths {
 			if m.agent != "" && obs.Agent != m.agent {
+				continue
+			}
+			// A path reached through a shared scope root is never eligible
+			// for a source-level move, regardless of scope/agent filtering;
+			// track it so the whole preview below is refused rather than
+			// silently moving the remaining subset.
+			if obs.SharedRoot {
+				if obs.Status == model.StatusDisabled {
+					if !hasSharedRootDisabled {
+						hasSharedRootDisabled = true
+						sharedRootDisabledPath = obs.Path
+					}
+				} else {
+					if !hasSharedRootActive {
+						hasSharedRootActive = true
+						sharedRootActivePath = obs.Path
+					}
+				}
 				continue
 			}
 			if m.agent != "" {
@@ -1891,7 +1988,14 @@ func (m appModel) sourceEnableDisableActions(skills []*model.Skill) []actions.Co
 	}
 
 	var out []actions.CommandPreview
-	if len(activePaths) > 0 {
+	switch {
+	case hasSharedRootActive:
+		title := "Disable source skills"
+		if m.agent != "" {
+			title = fmt.Sprintf("Disable source skills for agent %s", m.agentLabel())
+		}
+		out = append(out, actions.CommandPreview{ID: "disable_skill", Title: title, Description: "This source cannot be disabled because one or more directories are reached through a symlinked, shared scope root.", Available: false, Reason: actions.SharedRootReason(sharedRootActivePath)})
+	case len(activePaths) > 0:
 		title := "Disable source skills"
 		desc := "Disable all enabled skills in this source."
 		cmd := "disable source skills"
@@ -1901,11 +2005,18 @@ func (m appModel) sourceEnableDisableActions(skills []*model.Skill) []actions.Co
 			cmd = "disable source skills for agent " + m.agentLabel()
 		}
 		out = append(out, actions.CommandPreview{ID: "disable_skill", Title: title, Description: desc, Command: cmd, Exec: actions.ExecSpec{Internal: "disable_skill", Args: activePaths}, Mutates: true, Available: true})
-	} else if len(sharedActive) > 0 {
+	case len(sharedActive) > 0:
 		out = append(out, actions.CommandPreview{ID: "disable_skill", Title: fmt.Sprintf("Disable source skills for agent %s", m.agentLabel()), Description: "This source cannot be disabled for a single agent because one or more directories are shared.", Available: false, Reason: sharedSourceReason(sharedActive, "disable")})
 	}
 
-	if len(disabledPaths) > 0 {
+	switch {
+	case hasSharedRootDisabled:
+		title := "Enable source skills"
+		if m.agent != "" {
+			title = fmt.Sprintf("Enable source skills for agent %s", m.agentLabel())
+		}
+		out = append(out, actions.CommandPreview{ID: "enable_skill", Title: title, Description: "This source cannot be enabled because one or more disabled directories are reached through a symlinked, shared scope root.", Available: false, Reason: actions.SharedRootReason(sharedRootDisabledPath)})
+	case len(disabledPaths) > 0:
 		title := "Enable source skills"
 		desc := "Enable all disabled skills in this source."
 		cmd := "enable source skills"
@@ -1915,7 +2026,7 @@ func (m appModel) sourceEnableDisableActions(skills []*model.Skill) []actions.Co
 			cmd = "enable source skills for agent " + m.agentLabel()
 		}
 		out = append(out, actions.CommandPreview{ID: "enable_skill", Title: title, Description: desc, Command: cmd, Exec: actions.ExecSpec{Internal: "enable_skill", Args: disabledPaths}, Mutates: true, Available: true})
-	} else if len(sharedDisabled) > 0 {
+	case len(sharedDisabled) > 0:
 		out = append(out, actions.CommandPreview{ID: "enable_skill", Title: fmt.Sprintf("Enable source skills for agent %s", m.agentLabel()), Description: "This source cannot be enabled for a single agent because one or more disabled directories are shared.", Available: false, Reason: sharedSourceReason(sharedDisabled, "enable")})
 	}
 

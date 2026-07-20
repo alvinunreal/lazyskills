@@ -285,7 +285,11 @@ func ForSkillWithResolver(sk *model.Skill, resolve SkillsResolver) []CommandPrev
 		previews = append(previews, unavailablePreview("Open selected skill", reason))
 	}
 
-	if addSource, skillFilter, ok, reasonAdd := addIdentity(sk); ok {
+	sharedOp, isSharedRoot := sharedRootObservation(sk)
+
+	if isSharedRoot {
+		previews = append(previews, unavailablePreview("Reinstall/update selected skill", SharedRootReason(sharedOp.Path)))
+	} else if addSource, skillFilter, ok, reasonAdd := addIdentity(sk); ok {
 		program, baseArgs := resolve()
 		args := append([]string{}, baseArgs...)
 		args = append(args, "add", addSource, "--skill", skillFilter, "--yes")
@@ -299,7 +303,9 @@ func ForSkillWithResolver(sk *model.Skill, resolve SkillsResolver) []CommandPrev
 		previews = append(previews, unavailablePreview("Reinstall/update selected skill", reasonAdd))
 	}
 
-	if target, ok, reasonRemove := removeIdentity(sk); ok {
+	if isSharedRoot {
+		previews = append(previews, unavailablePreview("Remove selected skill", SharedRootReason(sharedOp.Path)))
+	} else if target, ok, reasonRemove := removeIdentity(sk); ok {
 		program, baseArgs := resolve()
 		args := append([]string{}, baseArgs...)
 		args = append(args, "remove", target, "--yes")
@@ -317,8 +323,32 @@ func ForSkillWithResolver(sk *model.Skill, resolve SkillsResolver) []CommandPrev
 	}
 	if hasBrokenSymlink(sk) {
 		previews = append(previews, deleteBrokenSymlinkPreview(sk))
+	} else if sharedBroken, ok := onlySharedRootBrokenSymlink(sk); ok {
+		// The only broken symlink(s) here live in a shared canonical repo;
+		// surface why the action is gated instead of letting it silently
+		// vanish from the list.
+		previews = append(previews, unavailablePreview("Delete broken symlink(s)", SharedRootReason(sharedBroken.Path)))
 	}
 	return previews
+}
+
+// sharedRootObservation returns the first observed path for sk that was
+// reached through a symlinked scope root, if any.
+func sharedRootObservation(sk *model.Skill) (model.ObservedPath, bool) {
+	for _, op := range sk.ObservedPaths {
+		if op.SharedRoot {
+			return op, true
+		}
+	}
+	return model.ObservedPath{}, false
+}
+
+// SharedRootReason builds the unavailability reason shown when a write
+// action is gated because the skill's files are reached through a
+// symlinked, shared scope root. Exported so callers outside this package
+// (the TUI's disable/enable move flow) can gate on the identical message.
+func SharedRootReason(path string) string {
+	return fmt.Sprintf("skill files are reached through a symlinked skills root (%s); write actions are disabled to protect the shared canonical source", compat.SanitizeMetadata(path))
 }
 
 // hasOrphanedLock reports whether the skill is a lock entry whose files are
@@ -353,16 +383,40 @@ func pruneLockPreview(sk *model.Skill) CommandPreview {
 	}
 }
 
+// hasBrokenSymlink reports whether sk has a broken symlink that lazyskills
+// owns and may delete. Broken symlinks living under a shared scope root are
+// excluded: deleting them would mutate a canonical repo shared by other
+// agents, not just this skill's own location.
 func hasBrokenSymlink(sk *model.Skill) bool {
 	if sk == nil {
 		return false
 	}
 	for _, op := range sk.ObservedPaths {
-		if op.Status == model.StatusBrokenSymlink {
+		if op.Status == model.StatusBrokenSymlink && !op.SharedRoot {
 			return true
 		}
 	}
 	return false
+}
+
+// onlySharedRootBrokenSymlink reports whether sk has at least one broken
+// symlink observation and every one of them lives under a shared scope root
+// (i.e. hasBrokenSymlink is false only because of the shared-root guard, not
+// because there are no broken symlinks at all).
+func onlySharedRootBrokenSymlink(sk *model.Skill) (model.ObservedPath, bool) {
+	found := false
+	var shared model.ObservedPath
+	for _, op := range sk.ObservedPaths {
+		if op.Status != model.StatusBrokenSymlink {
+			continue
+		}
+		if !op.SharedRoot {
+			return model.ObservedPath{}, false
+		}
+		found = true
+		shared = op
+	}
+	return shared, found
 }
 
 // deleteBrokenSymlinkPreview builds the internal action that deletes the

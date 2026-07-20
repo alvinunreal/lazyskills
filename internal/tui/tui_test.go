@@ -3530,6 +3530,201 @@ func TestTuiEnableDisableEdgeCases(t *testing.T) {
 	}
 }
 
+// TestSharedRootDisablesPerAgentEnableDisable covers alvinunreal/lazyskills#34:
+// a per-agent disable/enable preview must be refused (not silently offered)
+// when the observation it targets was reached through a symlinked, shared
+// scope root, since moving it would mutate the canonical repo other agents
+// share.
+func TestSharedRootDisablesPerAgentEnableDisable(t *testing.T) {
+	tempDir := t.TempDir()
+	skillDir := filepath.Join(tempDir, "shared-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sk := &model.Skill{
+		Name:  "shared-skill",
+		Scope: model.ScopeGlobal,
+		ObservedPaths: []model.ObservedPath{
+			{
+				Path:       skillDir,
+				Scope:      model.ScopeGlobal,
+				Agent:      "codex",
+				Status:     model.StatusCopy,
+				SharedRoot: true,
+			},
+		},
+	}
+
+	m := appModel{cwd: tempDir, agent: "codex"}
+	acts := m.appendEnableDisableActions(nil, sk)
+	if len(acts) != 1 || acts[0].ID != "disable_skill" || acts[0].Available {
+		t.Fatalf("expected disable action to be unavailable for a shared-root path, got: %+v", acts)
+	}
+	if !strings.Contains(acts[0].Reason, "symlinked") || !strings.Contains(acts[0].Reason, skillDir) {
+		t.Fatalf("expected shared-root reason naming the path, got %q", acts[0].Reason)
+	}
+
+	disabledPath := filepath.Join(tempDir, ".lazyskills-disabled", "shared-skill")
+	skDisabled := &model.Skill{
+		Name:  "shared-skill",
+		Scope: model.ScopeGlobal,
+		ObservedPaths: []model.ObservedPath{
+			{
+				Path:       disabledPath,
+				TargetPath: skillDir,
+				Scope:      model.ScopeGlobal,
+				Agent:      "codex",
+				Status:     model.StatusDisabled,
+				SharedRoot: true,
+			},
+		},
+	}
+	acts = m.appendEnableDisableActions(nil, skDisabled)
+	if len(acts) != 1 || acts[0].ID != "enable_skill" || acts[0].Available {
+		t.Fatalf("expected enable action to be unavailable for a shared-root disabled path, got: %+v", acts)
+	}
+	if !strings.Contains(acts[0].Reason, "symlinked") {
+		t.Fatalf("expected shared-root reason, got %q", acts[0].Reason)
+	}
+}
+
+// TestSharedRootGatesScopeLevelEnableDisable covers the scope-level move,
+// which touches every agent root for the skill at once: if even one of
+// those roots is shared, the whole action must be refused rather than
+// silently moving the remaining, owned subset.
+func TestSharedRootGatesScopeLevelEnableDisable(t *testing.T) {
+	tempDir := t.TempDir()
+	ownedDir := filepath.Join(tempDir, "owned-skill")
+	sharedDir := filepath.Join(tempDir, "shared-skill-root", "shared-skill")
+	if err := os.MkdirAll(ownedDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sharedDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sk := &model.Skill{
+		Name:  "mixed-skill",
+		Scope: model.ScopeGlobal,
+		ObservedPaths: []model.ObservedPath{
+			{Path: ownedDir, Scope: model.ScopeGlobal, Agent: "claude-code", Status: model.StatusCopy},
+			{Path: sharedDir, Scope: model.ScopeGlobal, Agent: "codex", Status: model.StatusCopy, SharedRoot: true},
+		},
+	}
+
+	m := appModel{cwd: tempDir}
+	acts := m.appendEnableDisableActions(nil, sk)
+	if len(acts) != 1 || acts[0].ID != "disable_skill" || acts[0].Available {
+		t.Fatalf("expected the whole scope-level disable to be refused when any path is shared-root, got: %+v", acts)
+	}
+	if !strings.Contains(acts[0].Reason, "symlinked") {
+		t.Fatalf("expected shared-root reason, got %q", acts[0].Reason)
+	}
+}
+
+// TestSharedRootGatesSourceEnableDisableActions covers the source-level bulk
+// disable/enable builder: any shared-root observation among the source's
+// skills must gate the whole preview unavailable.
+func TestSharedRootGatesSourceEnableDisableActions(t *testing.T) {
+	sk := &model.Skill{
+		Name:  "shared-skill",
+		Scope: model.ScopeGlobal,
+		ObservedPaths: []model.ObservedPath{
+			{Path: "/home/user/.codex/skills/shared-skill", Scope: model.ScopeGlobal, Agent: "codex", Status: model.StatusCopy, SharedRoot: true},
+		},
+	}
+	m := appModel{}
+	previews := m.sourceEnableDisableActions([]*model.Skill{sk})
+	var disable *actions.CommandPreview
+	for i := range previews {
+		if previews[i].ID == "disable_skill" {
+			disable = &previews[i]
+		}
+	}
+	if disable == nil || disable.Available {
+		t.Fatalf("expected disable_skill preview to be unavailable for a shared-root skill, got %+v", previews)
+	}
+	if !strings.Contains(disable.Reason, "symlinked") {
+		t.Fatalf("expected shared-root reason, got %q", disable.Reason)
+	}
+
+	skDisabled := &model.Skill{
+		Name:  "shared-skill",
+		Scope: model.ScopeGlobal,
+		ObservedPaths: []model.ObservedPath{
+			{
+				Path:       "/home/user/.codex/skills/.lazyskills-disabled/shared-skill",
+				TargetPath: "/home/user/.codex/skills/shared-skill",
+				Scope:      model.ScopeGlobal,
+				Agent:      "codex",
+				Status:     model.StatusDisabled,
+				SharedRoot: true,
+			},
+		},
+	}
+	previews = m.sourceEnableDisableActions([]*model.Skill{skDisabled})
+	var enable *actions.CommandPreview
+	for i := range previews {
+		if previews[i].ID == "enable_skill" {
+			enable = &previews[i]
+		}
+	}
+	if enable == nil || enable.Available {
+		t.Fatalf("expected enable_skill preview to be unavailable for a shared-root disabled skill, got %+v", previews)
+	}
+	if !strings.Contains(enable.Reason, "symlinked") {
+		t.Fatalf("expected shared-root reason, got %q", enable.Reason)
+	}
+}
+
+// TestSharedRootMoveHandlerRefusesRename is the defense-in-depth check on the
+// exec handler itself: even if a stale or forged action offers a move whose
+// src is a shared-root path, the handler must re-check m.result.Skills and
+// abort the whole plan without renaming anything.
+func TestSharedRootMoveHandlerRefusesRename(t *testing.T) {
+	tempDir := t.TempDir()
+	skillDir := filepath.Join(tempDir, "shared-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	m := appModel{
+		cwd: tempDir,
+		result: model.ScanResult{
+			Skills: []*model.Skill{
+				{
+					Name:  "shared-skill",
+					Scope: model.ScopeGlobal,
+					ObservedPaths: []model.ObservedPath{
+						{Path: skillDir, Scope: model.ScopeGlobal, Agent: "codex", Status: model.StatusCopy, SharedRoot: true},
+					},
+				},
+			},
+		},
+	}
+
+	action := actions.CommandPreview{
+		ID:   "disable_skill",
+		Exec: actions.ExecSpec{Internal: "disable_skill", Args: []string{skillDir}},
+	}
+
+	resModel, cmd := m.executeAction(action)
+	if cmd != nil {
+		t.Fatal("expected the move to fail preflight (no cmd returned) for a shared-root path")
+	}
+	resAppModel := resModel.(appModel)
+	if resAppModel.actionResult == nil || !strings.Contains(resAppModel.actionResult.Err, "symlinked") {
+		t.Fatalf("expected actionResult to carry a shared-root refusal, got: %+v", resAppModel.actionResult)
+	}
+	if _, err := os.Stat(skillDir); err != nil {
+		t.Fatalf("expected the shared-root directory to remain untouched, got error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tempDir, ".lazyskills-disabled", "shared-skill")); !os.IsNotExist(err) {
+		t.Fatal("expected no disabled shelf entry to be created for the shared-root path")
+	}
+}
+
 func TestTUIPreviewRenderInFlightSuppression(t *testing.T) {
 	m := appModel{
 		width:            120,

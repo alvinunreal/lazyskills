@@ -265,6 +265,16 @@ type Location struct {
 	Scope     model.Scope
 	AgentName string
 	Canonical bool
+	// SharedRoot reports whether Root is reached through a symlinked path
+	// component, meaning the files under it are shared with whatever the
+	// link resolves to (e.g. another agent's canonical skills directory).
+	SharedRoot bool
+	// SharedRootLink is the symlinked path component (logical path), for
+	// diagnostic messages. Empty unless SharedRoot is true.
+	SharedRootLink string
+	// SharedRootTarget is the symlink's resolved (absolute, cleaned) target,
+	// for diagnostic messages. Empty unless SharedRoot is true.
+	SharedRootTarget string
 }
 
 func Locations(cwd string) []Location { return LocationsWithEnv(cwd, DefaultEnv()) }
@@ -273,6 +283,17 @@ func LocationsWithEnv(cwd string, e Env) []Location {
 	seen := map[string]bool{}
 	globalRoots := map[string]bool{}
 	homeIsCwd := filepath.Clean(cwd) == filepath.Clean(e.Home)
+	sharedCache := map[string]sharedRootResult{}
+	sharedFor := func(root, anchor string) sharedRootResult {
+		key := root + "\x00" + anchor
+		if result, ok := sharedCache[key]; ok {
+			return result
+		}
+		link, target, shared := sharedRootInfo(root, anchor)
+		result := sharedRootResult{link: link, target: target, shared: shared}
+		sharedCache[key] = result
+		return result
+	}
 	add := func(loc Location) {
 		key := string(loc.Scope) + "\x00" + loc.AgentName + "\x00" + loc.Root
 		if seen[key] {
@@ -300,16 +321,82 @@ func LocationsWithEnv(cwd string, e Env) []Location {
 		// project-scoped. homeIsCwd handles the cwd==home special case; this guard
 		// covers the general "project root under a global root" overlap.
 		if !homeIsCwd && !isUnderAnyGlobalRoot(filepath.Clean(projectRoot), globalRoots) {
-			add(Location{Root: projectRoot, Scope: model.ScopeProject, AgentName: a.Name, Canonical: a.Universal})
+			shared := sharedFor(projectRoot, cwd)
+			add(Location{Root: projectRoot, Scope: model.ScopeProject, AgentName: a.Name, Canonical: a.Universal, SharedRoot: shared.shared, SharedRootLink: shared.link, SharedRootTarget: shared.target})
 		}
 		if a.Universal && a.SupportsGlobal {
-			add(Location{Root: globalCanonical, Scope: model.ScopeGlobal, AgentName: a.Name, Canonical: true})
+			shared := sharedFor(globalCanonical, e.Home)
+			add(Location{Root: globalCanonical, Scope: model.ScopeGlobal, AgentName: a.Name, Canonical: true, SharedRoot: shared.shared, SharedRootLink: shared.link, SharedRootTarget: shared.target})
 		}
 		if a.SupportsGlobal && a.GlobalDir != "" && a.GlobalDir != globalCanonical {
-			add(Location{Root: a.GlobalDir, Scope: model.ScopeGlobal, AgentName: a.Name, Canonical: false})
+			shared := sharedFor(a.GlobalDir, e.Home)
+			add(Location{Root: a.GlobalDir, Scope: model.ScopeGlobal, AgentName: a.Name, Canonical: false, SharedRoot: shared.shared, SharedRootLink: shared.link, SharedRootTarget: shared.target})
 		}
 	}
 	return out
+}
+
+type sharedRootResult struct {
+	link   string
+	target string
+	shared bool
+}
+
+// sharedRootInfo reports whether root is reached through a symlinked path
+// component below anchor. anchor is cwd for project-scope locations and the
+// user's home directory for global-scope locations.
+//
+// When root sits under anchor, each path component of root strictly below
+// anchor is Lstat-ed in turn; the first symlinked component means everything
+// under it (including root) is shared with wherever the link resolves to.
+// A missing component means nothing below it exists either, so the walk
+// stops there and reports not-shared rather than continuing.
+//
+// When root is NOT under anchor (e.g. CODEX_HOME pointing outside the home
+// directory), only root itself is Lstat-ed and reported if it is a symlink.
+// The walk deliberately does not continue up to the filesystem root in that
+// case — doing so would false-positive on system-level symlinks such as
+// macOS's /var -> /private/var.
+func sharedRootInfo(root, anchor string) (link, target string, shared bool) {
+	root = filepath.Clean(root)
+	anchor = filepath.Clean(anchor)
+	if root == anchor {
+		return "", "", false
+	}
+	prefix := anchor + string(filepath.Separator)
+	if !strings.HasPrefix(root, prefix) {
+		return symlinkAt(root)
+	}
+	rel := strings.TrimPrefix(root, prefix)
+	current := anchor
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return "", "", false
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return symlinkAt(current)
+		}
+	}
+	return "", "", false
+}
+
+// symlinkAt reports whether path itself is a symlink, returning path as the
+// link and its resolved, cleaned target when so.
+func symlinkAt(path string) (link, target string, shared bool) {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return "", "", false
+	}
+	raw, err := os.Readlink(path)
+	if err != nil {
+		return "", "", false
+	}
+	if !filepath.IsAbs(raw) {
+		raw = filepath.Join(filepath.Dir(path), raw)
+	}
+	return path, filepath.Clean(raw), true
 }
 
 // isUnderAnyGlobalRoot reports whether path is equal to, or nested inside, any

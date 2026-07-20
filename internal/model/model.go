@@ -26,6 +26,11 @@ type ObservedPath struct {
 	Agent      string `json:"agent"`
 	Status     Status `json:"status"`
 	TargetPath string `json:"target_path,omitempty"` // For symlinks, what they point to
+	// SharedRoot reports whether this path was reached through a symlinked
+	// scope root (e.g. ~/.codex/skills -> ~/.claude/skills). Files here are
+	// not owned by this location: they are shared with whatever the link
+	// resolves to, so destructive actions must not be offered for them.
+	SharedRoot bool `json:"shared_root,omitempty"`
 }
 
 // HealthIssue represents a configuration or discovery issue with a skill.

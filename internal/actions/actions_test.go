@@ -141,6 +141,98 @@ func TestBulkActionsBuildBatchCommands(t *testing.T) {
 	}
 }
 
+func TestSharedRootSkillDisablesReinstallAndRemove(t *testing.T) {
+	sk := &model.Skill{
+		Name:          "Shared",
+		Scope:         model.ScopeGlobal,
+		CanonicalPath: "/tmp/shared",
+		GlobalLock:    &model.GlobalLockEntry{Source: "owner/repo"},
+		ObservedPaths: []model.ObservedPath{
+			{Path: "/home/user/.codex/skills/shared", Status: model.StatusCopy, SharedRoot: true},
+		},
+	}
+	previews := ForSkill(sk)
+
+	reinstall := previewByTitle(t, previews, "Reinstall/update selected skill")
+	if reinstall.Available {
+		t.Fatalf("expected reinstall/update to be unavailable for a shared-root skill: %#v", reinstall)
+	}
+	if !strings.Contains(reinstall.Reason, "/home/user/.codex/skills/shared") {
+		t.Fatalf("expected reason to name the symlinked root, got %q", reinstall.Reason)
+	}
+
+	remove := previewByTitle(t, previews, "Remove selected skill")
+	if remove.Available {
+		t.Fatalf("expected remove to be unavailable for a shared-root skill: %#v", remove)
+	}
+	if !strings.Contains(remove.Reason, "/home/user/.codex/skills/shared") {
+		t.Fatalf("expected reason to name the symlinked root, got %q", remove.Reason)
+	}
+
+	// open_skill is read-only and must stay available; a skill's own lock
+	// pruning (prune_lock) never touches skill files, so it is unaffected
+	// too — but this skill has no orphaned lock, so it's simply absent.
+	for _, p := range previews {
+		if p.ID == "prune_lock" {
+			t.Fatalf("did not expect prune_lock for a skill with a matching lock entry: %#v", p)
+		}
+	}
+}
+
+func TestSharedRootOnlyBrokenSymlinkIsGatedNotHidden(t *testing.T) {
+	sk := &model.Skill{
+		Name:  "broken-shared",
+		Scope: model.ScopeGlobal,
+		ObservedPaths: []model.ObservedPath{
+			{Path: "/home/user/.codex/skills/broken-shared", Status: model.StatusBrokenSymlink, SharedRoot: true},
+		},
+	}
+	previews := ForSkill(sk)
+	deleteAct := previewByTitle(t, previews, "Delete broken symlink(s)")
+	if deleteAct.Available {
+		t.Fatalf("expected delete_broken_symlink to be unavailable when the only broken symlink is shared-root: %#v", deleteAct)
+	}
+	if !strings.Contains(deleteAct.Reason, "/home/user/.codex/skills/broken-shared") {
+		t.Fatalf("expected reason to name the symlinked root, got %q", deleteAct.Reason)
+	}
+
+	// A skill with one shared-root broken symlink and one owned broken
+	// symlink must still offer the (owned-only) delete action.
+	mixed := &model.Skill{
+		Name:  "mixed",
+		Scope: model.ScopeGlobal,
+		ObservedPaths: []model.ObservedPath{
+			{Path: "/home/user/.codex/skills/mixed", Status: model.StatusBrokenSymlink, SharedRoot: true},
+			{Path: "/home/user/.claude/skills/mixed", Status: model.StatusBrokenSymlink, SharedRoot: false},
+		},
+	}
+	mixedDelete := previewByTitle(t, ForSkill(mixed), "Delete broken symlink(s)")
+	if !mixedDelete.Available || mixedDelete.Exec.Internal != "delete_broken_symlink" {
+		t.Fatalf("expected an executable delete action when a non-shared broken symlink also exists: %#v", mixedDelete)
+	}
+}
+
+func TestBulkActionsUnavailableForSharedRootSkill(t *testing.T) {
+	skills := []*model.Skill{
+		{
+			Name:  "Shared",
+			Scope: model.ScopeGlobal,
+			ObservedPaths: []model.ObservedPath{
+				{Path: "/home/user/.codex/skills/shared", Status: model.StatusCopy, SharedRoot: true},
+			},
+		},
+	}
+	previews := ForSkillsWithResolver(skills, func() (string, []string) { return "skills", nil })
+	if len(previews) != 2 {
+		t.Fatalf("expected bulk update and remove previews, got %#v", previews)
+	}
+	for _, p := range previews {
+		if p.Available {
+			t.Fatalf("expected bulk action to be unavailable for a shared-root skill: %#v", p)
+		}
+	}
+}
+
 func TestOpenEditorActionUsesSafeEditorAndSkillPath(t *testing.T) {
 	t.Setenv("EDITOR", "vim -n")
 	previews := ForSkill(&model.Skill{Name: "Deploy", Scope: model.ScopeProject, SkillPath: "/tmp/deploy/SKILL.md"})
