@@ -14,12 +14,17 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/alvinunreal/lazyskills/internal/actions"
+	"github.com/alvinunreal/lazyskills/internal/agents"
 	"github.com/alvinunreal/lazyskills/internal/compat"
 	"github.com/alvinunreal/lazyskills/internal/locks"
 	"github.com/alvinunreal/lazyskills/internal/model"
 	"github.com/alvinunreal/lazyskills/internal/registry"
 	"github.com/alvinunreal/lazyskills/internal/runner"
 )
+
+// checkDestructivePath is the live, uncached shared-root path validator used
+// immediately before filesystem mutations. Tests may replace it.
+var checkDestructivePath = agents.CheckDestructivePath
 
 const previewRefreshDelay = 300 * time.Millisecond
 
@@ -1425,9 +1430,21 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 			}
 		}
 
+		// safety: never move a path reached through a symlinked, shared scope
+		// root. Preview builders refuse these using scan-time observations, but
+		// execution re-validates live ancestry (not cached SharedRoot) so a
+		// topology change after the last scan cannot mutate a canonical repo.
 		// Preflight validation
 		var errs []string
 		for _, item := range plan {
+			if err := checkDestructivePath(item.src, m.cwd); err != nil {
+				errs = append(errs, compat.SanitizeMetadata(err.Error()))
+				continue
+			}
+			if err := checkDestructivePath(item.dest, m.cwd); err != nil {
+				errs = append(errs, compat.SanitizeMetadata(err.Error()))
+				continue
+			}
 			// Check if source exists
 			_, err := os.Lstat(item.src)
 			if err != nil {
@@ -1455,11 +1472,29 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 
 		succeededMoves := 0
 		if len(errs) == 0 {
-			// Execution
+			// Execution: re-validate live ancestry immediately before MkdirAll
+			// (so a topology swap cannot create dirs under a canonical target)
+			// and again after MkdirAll before Rename.
 			for _, item := range plan {
 				parent := filepath.Dir(item.dest)
+				if err := checkDestructivePath(item.src, m.cwd); err != nil {
+					errs = append(errs, compat.SanitizeMetadata(err.Error()))
+					break
+				}
+				if err := checkDestructivePath(item.dest, m.cwd); err != nil {
+					errs = append(errs, compat.SanitizeMetadata(err.Error()))
+					break
+				}
 				if err := os.MkdirAll(parent, 0755); err != nil {
 					errs = append(errs, fmt.Sprintf("failed to create directory %s: %v", parent, err))
+					break
+				}
+				if err := checkDestructivePath(item.src, m.cwd); err != nil {
+					errs = append(errs, compat.SanitizeMetadata(err.Error()))
+					break
+				}
+				if err := checkDestructivePath(item.dest, m.cwd); err != nil {
+					errs = append(errs, compat.SanitizeMetadata(err.Error()))
 					break
 				}
 				if err := os.Rename(item.src, item.dest); err != nil {
@@ -1532,6 +1567,23 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 				if op.Status != model.StatusBrokenSymlink {
 					continue // safety: never touch working symlinks or canonical files
 				}
+				if op.SharedRoot {
+					// Scan-time shared roots are not part of the owned delete
+					// set (preview already gated them). Skip without counting
+					// as failure; live check below still covers owned paths
+					// whose topology changed after the scan.
+					continue
+				}
+				// Live ancestry check: refuse when the path is currently
+				// reached through a shared scope root, or when location/
+				// inspection fails closed.
+				if err := checkDestructivePath(op.Path, m.cwd); err != nil {
+					failed++
+					if firstErr == "" {
+						firstErr = err.Error()
+					}
+					continue
+				}
 				info, err := os.Lstat(op.Path)
 				if err != nil {
 					if os.IsNotExist(err) {
@@ -1558,6 +1610,14 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 					failed++
 					if firstErr == "" {
 						firstErr = statErr.Error()
+					}
+					continue
+				}
+				// Re-check immediately before the unlink.
+				if err := checkDestructivePath(op.Path, m.cwd); err != nil {
+					failed++
+					if firstErr == "" {
+						firstErr = err.Error()
 					}
 					continue
 				}
@@ -1607,6 +1667,19 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 		return m, loadSnapshot(m.cwd)
 	}
 	if action.Exec.Interactive {
+		if err := m.validateExternalDestructiveAction(action); err != nil {
+			m.confirming = false
+			m.confirmInput = ""
+			m.confirmError = ""
+			m.actionResult = &runner.Result{
+				Program:  action.Exec.Program,
+				Args:     action.Exec.Args,
+				ExitCode: -1,
+				Err:      compat.SanitizeMetadata(err.Error()),
+			}
+			m.syncViewport()
+			return m, nil
+		}
 		cmd := exec.Command(action.Exec.Program, action.Exec.Args...)
 		cmd.Dir = m.cwd
 		m.running = true
@@ -1635,11 +1708,24 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 		m.confirmError = ""
 		m.syncViewport()
 		return m, func() tea.Msg {
-			result, partialSuccess := m.runBatch(action.Exec.Batch)
+			result, partialSuccess := m.runBatch(action.ID, action.Exec.Batch)
 			return actionResultMsg{result: result, mutates: action.Mutates, partialSuccess: partialSuccess}
 		}
 	}
 	spec := runner.ExecSpec{Program: action.Exec.Program, Args: action.Exec.Args, Cwd: m.cwd}
+	if err := m.validateExternalDestructiveAction(action); err != nil {
+		m.confirming = false
+		m.confirmInput = ""
+		m.confirmError = ""
+		m.actionResult = &runner.Result{
+			Program:  action.Exec.Program,
+			Args:     action.Exec.Args,
+			ExitCode: -1,
+			Err:      compat.SanitizeMetadata(err.Error()),
+		}
+		m.syncViewport()
+		return m, nil
+	}
 	m.running = true
 	m.runningTitle = action.Title
 	m.actionResult = nil
@@ -1648,6 +1734,20 @@ func (m appModel) executeAction(action actions.CommandPreview) (tea.Model, tea.C
 	m.confirmError = ""
 	m.syncViewport()
 	return m, func() tea.Msg {
+		// Re-validate immediately before the external command runs so a
+		// topology change after confirmation cannot mutate a shared root.
+		if err := m.validateExternalDestructiveAction(action); err != nil {
+			return actionResultMsg{
+				result: runner.Result{
+					Program:  action.Exec.Program,
+					Args:     action.Exec.Args,
+					Cwd:      m.cwd,
+					ExitCode: -1,
+					Err:      compat.SanitizeMetadata(err.Error()),
+				},
+				mutates: false,
+			}
+		}
 		result := runExec(spec)
 		partialSuccess := cleanupLockAfterRemove(action, m.cwd, &result)
 		return actionResultMsg{result: result, mutates: action.Mutates, partialSuccess: partialSuccess}
@@ -1687,13 +1787,39 @@ func cleanupLockAfterRemove(action actions.CommandPreview, cwd string, result *r
 	return false
 }
 
-func (m appModel) runBatch(batch []actions.ExecSpec) (runner.Result, bool) {
+func (m appModel) runBatch(actionID string, batch []actions.ExecSpec) (runner.Result, bool) {
+	// Upfront live validation of every batch item before any mutation.
+	if isExternalDestructiveActionID(actionID) {
+		for _, spec := range batch {
+			if err := m.validateExternalDestructiveSpec(actionID, spec); err != nil {
+				return runner.Result{
+					Program:  "bulk",
+					Cwd:      m.cwd,
+					ExitCode: -1,
+					Err:      compat.SanitizeMetadata(err.Error()),
+				}, false
+			}
+		}
+	}
+
 	lines := []string{}
 	succeeded := 0
 	for i, spec := range batch {
+		prefix := fmt.Sprintf("%d/%d %s", i+1, len(batch), compat.SanitizeMetadata(spec.Program))
+		// Re-validate immediately before each command runs.
+		if isExternalDestructiveActionID(actionID) {
+			if err := m.validateExternalDestructiveSpec(actionID, spec); err != nil {
+				return runner.Result{
+					Program:  "bulk",
+					Cwd:      m.cwd,
+					ExitCode: -1,
+					Err:      compat.SanitizeMetadata(err.Error()),
+					Stdout:   strings.Join(append(lines, prefix+" failed"), "\n"),
+				}, succeeded > 0
+			}
+		}
 		runSpec := runner.ExecSpec{Program: spec.Program, Args: spec.Args, Cwd: m.cwd}
 		result := runExec(runSpec)
-		prefix := fmt.Sprintf("%d/%d %s", i+1, len(batch), compat.SanitizeMetadata(spec.Program))
 		if result.ExitCode != 0 || result.Err != "" {
 			result.Stdout = strings.Join(append(lines, prefix+" failed"), "\n")
 			return result, succeeded > 0
@@ -1704,33 +1830,177 @@ func (m appModel) runBatch(batch []actions.ExecSpec) (runner.Result, bool) {
 	return runner.Result{Program: "bulk", Cwd: m.cwd, ExitCode: 0, Stdout: strings.Join(lines, "\n")}, false
 }
 
+// isExternalDestructiveActionID reports whether actionID is a PR #38-protected
+// external remove/reinstall (single or bulk) that must re-validate live
+// shared-root ancestry before execution.
+func isExternalDestructiveActionID(id string) bool {
+	switch id {
+	case "remove", "reinstall_update", "bulk_remove", "bulk_reinstall_update":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m appModel) validateExternalDestructiveAction(action actions.CommandPreview) error {
+	if !isExternalDestructiveActionID(action.ID) {
+		return nil
+	}
+	if len(action.Exec.Batch) > 0 {
+		for _, spec := range action.Exec.Batch {
+			if err := m.validateExternalDestructiveSpec(action.ID, spec); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return m.validateExternalDestructiveSpec(action.ID, action.Exec)
+}
+
+func (m appModel) validateExternalDestructiveSpec(actionID string, spec actions.ExecSpec) error {
+	skillName, scope, agentFilter, err := parseExternalDestructiveSpec(actionID, spec)
+	if err != nil {
+		return err
+	}
+	// Validate every current agent location the skills CLI would touch for
+	// this scope/agent selection — including empty/unobserved roots — via
+	// live location data, not stale scan observations.
+	paths, err := agents.DestructiveSkillInstallPaths(m.cwd, skillName, scope, agentFilter)
+	if err != nil {
+		return err
+	}
+	for _, p := range paths {
+		if err := checkDestructivePath(p, m.cwd); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// parseExternalDestructiveSpec extracts skill identity, scope, and optional
+// agent filter from a skills CLI remove/add ExecSpec. Fail closed on
+// unresolvable or ambiguous identity.
+func parseExternalDestructiveSpec(actionID string, spec actions.ExecSpec) (skillName string, scope model.Scope, agentFilter []string, err error) {
+	args := spec.Args
+	global := execArgsContain(args, "-g") || execArgsContain(args, "--global")
+	if global {
+		scope = model.ScopeGlobal
+	} else {
+		scope = model.ScopeProject
+	}
+	agentFilter = agentsFromArgs(args)
+
+	switch {
+	case actionID == "remove" || actionID == "bulk_remove" || execArgsContain(args, "remove"):
+		skillName = removeTargetFromArgs(args)
+		if skillName == "" {
+			return "", "", nil, fmt.Errorf("remove action is missing skill identity")
+		}
+	case actionID == "reinstall_update" || actionID == "bulk_reinstall_update" || execArgsContain(args, "add"):
+		skillName = argAfter(args, "--skill")
+		if skillName == "" {
+			return "", "", nil, fmt.Errorf("reinstall action is missing --skill identity")
+		}
+	default:
+		return "", "", nil, fmt.Errorf("unsupported destructive action %s", actionID)
+	}
+	return skillName, scope, agentFilter, nil
+}
+
+func execArgsContain(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+func argAfter(args []string, flag string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// agentsFromArgs collects --agent values from a skills CLI argv. Supports
+// repeated --agent name flags. Bare --agent without a value fails closed via
+// empty filter only when no names were provided (caller treats empty as all).
+func agentsFromArgs(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--agent" || a == "-a":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				// Malformed agent selection: return a sentinel that matches
+				// no location so validation fails closed.
+				return []string{"\x00"}
+			}
+			i++
+			out = append(out, args[i])
+		case strings.HasPrefix(a, "--agent="):
+			v := strings.TrimPrefix(a, "--agent=")
+			if v == "" {
+				return []string{"\x00"}
+			}
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func removeTargetFromArgs(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "remove" {
+			t := args[i+1]
+			if t != "" && !strings.HasPrefix(t, "-") {
+				return t
+			}
+		}
+	}
+	return ""
+}
+
 func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, sk *model.Skill) []actions.CommandPreview {
 	if sk == nil {
 		return previews
 	}
 	toggleActions := []actions.CommandPreview{}
 	if m.agent != "" {
-		var activePaths []string
-		var disabledPaths []string
+		var activeObs []model.ObservedPath
+		var disabledObs []model.ObservedPath
 		for _, obs := range sk.ObservedPaths {
 			if obs.Agent == m.agent {
 				if obs.Status == model.StatusDisabled {
-					disabledPaths = append(disabledPaths, obs.Path, obs.TargetPath)
+					disabledObs = append(disabledObs, obs)
 				} else {
-					activePaths = append(activePaths, obs.Path)
+					activeObs = append(activeObs, obs)
 				}
 			}
 		}
 
-		if len(activePaths) > 0 {
-			for _, path := range activePaths {
+		if len(activeObs) > 0 {
+			for _, obs := range activeObs {
+				path := obs.Path
 				sharingAgents := []string{}
 				for _, other := range sk.ObservedPaths {
 					if other.Path == path {
 						sharingAgents = append(sharingAgents, other.Agent)
 					}
 				}
-				if len(sharingAgents) > 1 {
+				switch {
+				case obs.SharedRoot:
+					toggleActions = append(toggleActions, actions.CommandPreview{
+						ID:          "disable_skill",
+						Title:       fmt.Sprintf("Disable skill for agent %s", m.agentLabel()),
+						Description: "This skill cannot be disabled because its files are reached through a symlinked, shared scope root.",
+						Available:   false,
+						Reason:      actions.SharedRootReason(path),
+					})
+				case len(sharingAgents) > 1:
 					reason := fmt.Sprintf("This path is shared by multiple agents (%s). Use scope-level disable instead.", strings.Join(sharingAgents, ", "))
 					toggleActions = append(toggleActions, actions.CommandPreview{
 						ID:          "disable_skill",
@@ -1739,7 +2009,7 @@ func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, 
 						Available:   false,
 						Reason:      reason,
 					})
-				} else {
+				default:
 					toggleActions = append(toggleActions, actions.CommandPreview{
 						ID:          "disable_skill",
 						Title:       fmt.Sprintf("Disable skill for agent %s", m.agentLabel()),
@@ -1756,10 +2026,10 @@ func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, 
 			}
 		}
 
-		if len(disabledPaths) > 0 {
-			for i := 0; i < len(disabledPaths); i += 2 {
-				src := disabledPaths[i]
-				dest := disabledPaths[i+1]
+		if len(disabledObs) > 0 {
+			for _, obs := range disabledObs {
+				src := obs.Path
+				dest := obs.TargetPath
 
 				sharingAgents := []string{}
 				for _, other := range sk.ObservedPaths {
@@ -1768,7 +2038,16 @@ func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, 
 					}
 				}
 
-				if len(sharingAgents) > 1 {
+				switch {
+				case obs.SharedRoot:
+					toggleActions = append(toggleActions, actions.CommandPreview{
+						ID:          "enable_skill",
+						Title:       fmt.Sprintf("Enable skill for agent %s", m.agentLabel()),
+						Description: "This skill cannot be enabled because its files are reached through a symlinked, shared scope root.",
+						Available:   false,
+						Reason:      actions.SharedRootReason(src),
+					})
+				case len(sharingAgents) > 1:
 					reason := fmt.Sprintf("This path is shared by multiple agents (%s). Use scope-level enable instead.", strings.Join(sharingAgents, ", "))
 					toggleActions = append(toggleActions, actions.CommandPreview{
 						ID:          "enable_skill",
@@ -1777,7 +2056,7 @@ func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, 
 						Available:   false,
 						Reason:      reason,
 					})
-				} else {
+				default:
 					toggleActions = append(toggleActions, actions.CommandPreview{
 						ID:          "enable_skill",
 						Title:       fmt.Sprintf("Enable skill for agent %s", m.agentLabel()),
@@ -1799,23 +2078,52 @@ func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, 
 		seenActive := map[string]bool{}
 		var disabledPaths []string
 		seenDisabled := map[string]bool{}
+		hasSharedActive, hasSharedDisabled := false, false
+		var sharedActivePath, sharedDisabledPath string
 		for _, obs := range sk.ObservedPaths {
-			if obs.Scope == sk.Scope {
-				if obs.Status == model.StatusDisabled {
-					if !seenDisabled[obs.Path] {
-						seenDisabled[obs.Path] = true
-						disabledPaths = append(disabledPaths, obs.Path, obs.TargetPath)
+			if obs.Scope != sk.Scope {
+				continue
+			}
+			if obs.Status == model.StatusDisabled {
+				if obs.SharedRoot {
+					if !hasSharedDisabled {
+						hasSharedDisabled = true
+						sharedDisabledPath = obs.Path
 					}
-				} else {
-					if !seenActive[obs.Path] {
-						seenActive[obs.Path] = true
-						activePaths = append(activePaths, obs.Path)
+					continue
+				}
+				if !seenDisabled[obs.Path] {
+					seenDisabled[obs.Path] = true
+					disabledPaths = append(disabledPaths, obs.Path, obs.TargetPath)
+				}
+			} else {
+				if obs.SharedRoot {
+					if !hasSharedActive {
+						hasSharedActive = true
+						sharedActivePath = obs.Path
 					}
+					continue
+				}
+				if !seenActive[obs.Path] {
+					seenActive[obs.Path] = true
+					activePaths = append(activePaths, obs.Path)
 				}
 			}
 		}
 
-		if len(activePaths) > 0 {
+		// A scope-level move touches every agent root at once; if any of
+		// them is reached through a shared scope root, refuse the whole
+		// action rather than silently moving the remaining subset.
+		switch {
+		case hasSharedActive:
+			toggleActions = append(toggleActions, actions.CommandPreview{
+				ID:          "disable_skill",
+				Title:       fmt.Sprintf("Disable skill (scope: %s)", sk.Scope),
+				Description: "This skill cannot be disabled across scope because one or more directories are reached through a symlinked, shared scope root.",
+				Available:   false,
+				Reason:      actions.SharedRootReason(sharedActivePath),
+			})
+		case len(activePaths) > 0:
 			toggleActions = append(toggleActions, actions.CommandPreview{
 				ID:          "disable_skill",
 				Title:       fmt.Sprintf("Disable skill (scope: %s)", sk.Scope),
@@ -1830,7 +2138,15 @@ func (m appModel) appendEnableDisableActions(previews []actions.CommandPreview, 
 			})
 		}
 
-		if len(disabledPaths) > 0 {
+		if hasSharedDisabled {
+			toggleActions = append(toggleActions, actions.CommandPreview{
+				ID:          "enable_skill",
+				Title:       fmt.Sprintf("Enable skill (scope: %s)", sk.Scope),
+				Description: "This skill cannot be enabled across scope because one or more disabled directories are reached through a symlinked, shared scope root.",
+				Available:   false,
+				Reason:      actions.SharedRootReason(sharedDisabledPath),
+			})
+		} else if len(disabledPaths) > 0 {
 			toggleActions = append(toggleActions, actions.CommandPreview{
 				ID:          "enable_skill",
 				Title:       fmt.Sprintf("Enable skill (scope: %s)", sk.Scope),
@@ -1858,10 +2174,30 @@ func (m appModel) sourceEnableDisableActions(skills []*model.Skill) []actions.Co
 	var disabledPaths []string
 	seenDisabled := map[string]bool{}
 	sharedActive, sharedDisabled := map[string][]string{}, map[string][]string{}
+	hasSharedRootActive, hasSharedRootDisabled := false, false
+	var sharedRootActivePath, sharedRootDisabledPath string
 
 	for _, sk := range skills {
 		for _, obs := range sk.ObservedPaths {
 			if m.agent != "" && obs.Agent != m.agent {
+				continue
+			}
+			// A path reached through a shared scope root is never eligible
+			// for a source-level move, regardless of scope/agent filtering;
+			// track it so the whole preview below is refused rather than
+			// silently moving the remaining subset.
+			if obs.SharedRoot {
+				if obs.Status == model.StatusDisabled {
+					if !hasSharedRootDisabled {
+						hasSharedRootDisabled = true
+						sharedRootDisabledPath = obs.Path
+					}
+				} else {
+					if !hasSharedRootActive {
+						hasSharedRootActive = true
+						sharedRootActivePath = obs.Path
+					}
+				}
 				continue
 			}
 			if m.agent != "" {
@@ -1891,7 +2227,14 @@ func (m appModel) sourceEnableDisableActions(skills []*model.Skill) []actions.Co
 	}
 
 	var out []actions.CommandPreview
-	if len(activePaths) > 0 {
+	switch {
+	case hasSharedRootActive:
+		title := "Disable source skills"
+		if m.agent != "" {
+			title = fmt.Sprintf("Disable source skills for agent %s", m.agentLabel())
+		}
+		out = append(out, actions.CommandPreview{ID: "disable_skill", Title: title, Description: "This source cannot be disabled because one or more directories are reached through a symlinked, shared scope root.", Available: false, Reason: actions.SharedRootReason(sharedRootActivePath)})
+	case len(activePaths) > 0:
 		title := "Disable source skills"
 		desc := "Disable all enabled skills in this source."
 		cmd := "disable source skills"
@@ -1901,11 +2244,18 @@ func (m appModel) sourceEnableDisableActions(skills []*model.Skill) []actions.Co
 			cmd = "disable source skills for agent " + m.agentLabel()
 		}
 		out = append(out, actions.CommandPreview{ID: "disable_skill", Title: title, Description: desc, Command: cmd, Exec: actions.ExecSpec{Internal: "disable_skill", Args: activePaths}, Mutates: true, Available: true})
-	} else if len(sharedActive) > 0 {
+	case len(sharedActive) > 0:
 		out = append(out, actions.CommandPreview{ID: "disable_skill", Title: fmt.Sprintf("Disable source skills for agent %s", m.agentLabel()), Description: "This source cannot be disabled for a single agent because one or more directories are shared.", Available: false, Reason: sharedSourceReason(sharedActive, "disable")})
 	}
 
-	if len(disabledPaths) > 0 {
+	switch {
+	case hasSharedRootDisabled:
+		title := "Enable source skills"
+		if m.agent != "" {
+			title = fmt.Sprintf("Enable source skills for agent %s", m.agentLabel())
+		}
+		out = append(out, actions.CommandPreview{ID: "enable_skill", Title: title, Description: "This source cannot be enabled because one or more disabled directories are reached through a symlinked, shared scope root.", Available: false, Reason: actions.SharedRootReason(sharedRootDisabledPath)})
+	case len(disabledPaths) > 0:
 		title := "Enable source skills"
 		desc := "Enable all disabled skills in this source."
 		cmd := "enable source skills"
@@ -1915,7 +2265,7 @@ func (m appModel) sourceEnableDisableActions(skills []*model.Skill) []actions.Co
 			cmd = "enable source skills for agent " + m.agentLabel()
 		}
 		out = append(out, actions.CommandPreview{ID: "enable_skill", Title: title, Description: desc, Command: cmd, Exec: actions.ExecSpec{Internal: "enable_skill", Args: disabledPaths}, Mutates: true, Available: true})
-	} else if len(sharedDisabled) > 0 {
+	case len(sharedDisabled) > 0:
 		out = append(out, actions.CommandPreview{ID: "enable_skill", Title: fmt.Sprintf("Enable source skills for agent %s", m.agentLabel()), Description: "This source cannot be enabled for a single agent because one or more disabled directories are shared.", Available: false, Reason: sharedSourceReason(sharedDisabled, "enable")})
 	}
 

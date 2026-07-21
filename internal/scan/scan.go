@@ -249,6 +249,7 @@ func scanDisabledLocation(loc agents.Location, skills map[string]*model.Skill) {
 			Agent:      loc.AgentName,
 			Status:     model.StatusDisabled,
 			TargetPath: filepath.Join(loc.Root, entry.Name()),
+			SharedRoot: loc.SharedRoot,
 		}
 		parseDir := path
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -259,6 +260,7 @@ func scanDisabledLocation(loc agents.Location, skills map[string]*model.Skill) {
 			if st, err := os.Stat(target); err != nil || !st.IsDir() {
 				sk := ensureSkill(skills, loc.Scope, entry.Name(), entry.Name(), "")
 				addObservedPath(sk, observed)
+				addSharedScopeRootIssue(sk, loc, observed.Path)
 				continue
 			}
 			parseDir = target
@@ -271,6 +273,7 @@ func scanDisabledLocation(loc agents.Location, skills map[string]*model.Skill) {
 		if err != nil {
 			sk := ensureSkill(skills, loc.Scope, entry.Name(), entry.Name(), "")
 			addObservedPath(sk, observed)
+			addSharedScopeRootIssue(sk, loc, observed.Path)
 			issueType := "invalid_frontmatter"
 			if errors.Is(err, os.ErrNotExist) {
 				issueType = "missing_skill_md"
@@ -287,7 +290,22 @@ func scanDisabledLocation(loc agents.Location, skills map[string]*model.Skill) {
 			sk.Preview = doc.Raw
 		}
 		addObservedPath(sk, observed)
+		addSharedScopeRootIssue(sk, loc, observed.Path)
 	}
+}
+
+// addSharedScopeRootIssue records the shared_scope_root warning for an
+// observation reached through a symlinked scope root (active or disabled).
+func addSharedScopeRootIssue(sk *model.Skill, loc agents.Location, path string) {
+	if sk == nil || !loc.SharedRoot {
+		return
+	}
+	sk.AddHealthIssue(model.HealthIssue{
+		Type:     "shared_scope_root",
+		Severity: "warning",
+		Message:  sharedScopeRootMessage(loc),
+		Path:     path,
+	})
 }
 
 type locationScanCacheKey struct {
@@ -596,11 +614,22 @@ func applyScannedLocationRecords(loc agents.Location, skills map[string]*model.S
 		}
 		observed := record.observed
 		observed.Agent = loc.AgentName
+		observed.SharedRoot = loc.SharedRoot
 		addObservedPath(sk, observed)
 		for _, issue := range record.healthIssues {
 			sk.AddHealthIssue(issue)
 		}
+		addSharedScopeRootIssue(sk, loc, observed.Path)
 	}
+}
+
+// sharedScopeRootMessage explains, for the TUI and JSON output, why a skill
+// reached through a symlinked scope root has its write actions disabled.
+func sharedScopeRootMessage(loc agents.Location) string {
+	return fmt.Sprintf(
+		"skills root is reached through symlink %s -> %s; files here are shared with other locations and write actions are disabled",
+		compat.SanitizeMetadata(loc.SharedRootLink), compat.SanitizeMetadata(loc.SharedRootTarget),
+	)
 }
 
 func ensureSkill(skills map[string]*model.Skill, scope model.Scope, keyHint, name, desc string) *model.Skill {
