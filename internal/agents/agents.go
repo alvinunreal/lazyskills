@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -343,55 +344,151 @@ type sharedRootResult struct {
 }
 
 // sharedRootInfo reports whether root is reached through a symlinked path
-// component below anchor. anchor is cwd for project-scope locations and the
-// user's home directory for global-scope locations.
+// component. anchor is cwd for project-scope locations and the user's home
+// directory for global-scope locations.
 //
 // When root sits under anchor, each path component of root strictly below
 // anchor is Lstat-ed in turn; the first symlinked component means everything
 // under it (including root) is shared with wherever the link resolves to.
-// A missing component means nothing below it exists either, so the walk
-// stops there and reports not-shared rather than continuing.
 //
-// When root is NOT under anchor (e.g. CODEX_HOME pointing outside the home
-// directory), only root itself is Lstat-ed and reported if it is a symlink.
-// The walk deliberately does not continue up to the filesystem root in that
-// case — doing so would false-positive on system-level symlinks such as
-// macOS's /var -> /private/var.
+// When root is NOT under anchor (e.g. CODEX_HOME=/alias pointing outside the
+// home directory), every path component needed to reach root is walked from
+// the volume root so ancestor symlinks such as /alias -> ~/.claude are
+// detected even when /alias/skills itself is an ordinary directory. A normal
+// non-symlink external root remains usable.
+//
+// A missing component after an earlier symlink is never reached: the walk
+// returns shared at the first symlink. A missing component with no prior
+// symlink means the path does not exist yet and is reported not-shared.
+// Does not use EvalSymlinks.
 func sharedRootInfo(root, anchor string) (link, target string, shared bool) {
 	root = filepath.Clean(root)
 	anchor = filepath.Clean(anchor)
+	if root == "" || root == "." {
+		return "", "", false
+	}
 	if root == anchor {
 		return "", "", false
 	}
-	prefix := anchor + string(filepath.Separator)
-	if !strings.HasPrefix(root, prefix) {
+
+	start := pathWalkStart(root)
+	if pathInside(root, anchor) && anchor != "" && anchor != "." {
+		// Restrict the walk to components strictly below anchor so system
+		// symlinks above the scope boundary (e.g. macOS /var -> /private/var
+		// when home lives under /var/...) are not false-positives.
+		start = anchor
+	}
+	if root == start {
 		return symlinkAt(root)
 	}
-	rel := strings.TrimPrefix(root, prefix)
-	current := anchor
+
+	rel, err := filepath.Rel(start, root)
+	if err != nil || rel == "." || !pathInside(root, start) {
+		// Fall back to walking every absolute component of root.
+		return walkSymlinkComponents(root, pathWalkStart(root))
+	}
+	return walkSymlinkComponents(root, start)
+}
+
+// walkSymlinkComponents Lstats each path component from start down to root
+// (exclusive of start, inclusive of root). Returns at the first symlink.
+// Missing components (ErrNotExist) with no earlier symlink mean the path is
+// not a live shared root. Any other inspection error fails closed as shared.
+func walkSymlinkComponents(root, start string) (link, target string, shared bool) {
+	root = filepath.Clean(root)
+	start = filepath.Clean(start)
+	if root == start {
+		return symlinkAt(root)
+	}
+	rel, err := filepath.Rel(start, root)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", "", false
+	}
+	current := start
 	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
 		if err != nil {
-			return "", "", false
+			if os.IsNotExist(err) {
+				// Missing component with no earlier symlink: not a live shared root.
+				return "", "", false
+			}
+			// Inspection error: fail closed.
+			return current, "", true
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return symlinkAt(current)
+			// Reuse the Lstat result; only Readlink is needed for the target.
+			return readlinkDetails(current)
 		}
 	}
 	return "", "", false
 }
 
+// pathWalkStart returns the volume root used when walking absolute path
+// components of an external custom root (e.g. "/" on Unix, "C:\\" on Windows).
+func pathWalkStart(path string) string {
+	path = filepath.Clean(path)
+	vol := filepath.VolumeName(path)
+	if vol != "" {
+		// Windows volume root: "C:" + separator
+		return vol + string(filepath.Separator)
+	}
+	if filepath.IsAbs(path) {
+		return string(filepath.Separator)
+	}
+	// Relative path: walk from "." is not meaningful for shared-root
+	// detection; callers typically pass absolute roots.
+	return ""
+}
+
+// pathInside reports whether path is equal to root or a descendant of root
+// using filepath-aware containment (not raw string-prefix matching), so
+// siblings like root+"-foo" are not treated as inside root.
+func pathInside(path, root string) bool {
+	path = filepath.Clean(path)
+	root = filepath.Clean(root)
+	if path == "" || root == "" {
+		return false
+	}
+	if path == root {
+		return true
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
 // symlinkAt reports whether path itself is a symlink, returning path as the
-// link and its resolved, cleaned target when so.
+// link and its resolved, cleaned target when so. Lstat/Readlink inspection
+// errors on a path that appears to be a symlink fail closed as shared.
 func symlinkAt(path string) (link, target string, shared bool) {
 	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", "", false
+		}
+		return path, "", true
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
 		return "", "", false
 	}
+	return readlinkDetails(path)
+}
+
+// readlinkDetails resolves a path already known (via Lstat) to be a symlink.
+// Avoids a second Lstat; Readlink failures fail closed as shared.
+func readlinkDetails(path string) (link, target string, shared bool) {
 	raw, err := os.Readlink(path)
 	if err != nil {
-		return "", "", false
+		return path, "", true
 	}
 	if !filepath.IsAbs(raw) {
 		raw = filepath.Join(filepath.Dir(path), raw)
@@ -399,16 +496,154 @@ func symlinkAt(path string) (link, target string, shared bool) {
 	return path, filepath.Clean(raw), true
 }
 
+// CheckDestructivePath reports whether path is currently safe to mutate.
+// Path must sit under a known agent location root. Live checks cover:
+//  1. symlink ancestry of the matched scope root (below its anchor), and
+//  2. every path component from that root through filepath.Dir(path)
+//     (nested/shelf parents such as .lazyskills-disabled).
+//
+// The final skill entry leaf may itself be a symlink and is not rejected for
+// that alone. Fail closed when the path's location is unknown or inspection
+// errors. Do not use scan-time ObservedPath.SharedRoot alone at execution time.
+func CheckDestructivePath(path, cwd string) error {
+	return CheckDestructivePathWithEnv(path, cwd, DefaultEnv())
+}
+
+// CheckDestructivePathWithEnv is CheckDestructivePath with an explicit Env
+// (for tests and callers that already have one).
+func CheckDestructivePathWithEnv(path, cwd string, e Env) error {
+	path = filepath.Clean(path)
+	if path == "" || path == "." {
+		return fmt.Errorf("path is empty or invalid")
+	}
+	locs := LocationsWithEnv(cwd, e)
+	loc, ok := locationContainingPath(path, locs)
+	if !ok {
+		return fmt.Errorf("path is outside known skill locations; refusing mutation: %s", path)
+	}
+	root := filepath.Clean(loc.Root)
+	anchor := e.Home
+	if loc.Scope == model.ScopeProject {
+		anchor = cwd
+	}
+	// Live, uncached ancestry walk for the matched scope root.
+	_, _, shared := sharedRootInfo(root, anchor)
+	if shared {
+		return fmt.Errorf("path is reached through a symlinked skills root; refusing mutation: %s", path)
+	}
+	// Live-validate nested parents below the scope root through Dir(path),
+	// excluding only the final skill entry. Catches a .lazyskills-disabled
+	// (or other intermediate) component replaced by a symlink after scan.
+	if err := checkNestedParentsSafe(path, root); err != nil {
+		return err
+	}
+	return nil
+}
+
+// checkNestedParentsSafe walks symlink components strictly below scopeRoot
+// through filepath.Dir(path). path itself (the skill entry) is not checked.
+func checkNestedParentsSafe(path, scopeRoot string) error {
+	path = filepath.Clean(path)
+	scopeRoot = filepath.Clean(scopeRoot)
+	if path == scopeRoot {
+		return nil
+	}
+	if !pathInside(path, scopeRoot) {
+		return fmt.Errorf("path is outside known skill locations; refusing mutation: %s", path)
+	}
+	parent := filepath.Dir(path)
+	if parent == path || parent == scopeRoot {
+		// Direct child of the scope root: no nested parent components.
+		return nil
+	}
+	_, _, shared := walkSymlinkComponents(parent, scopeRoot)
+	if shared {
+		return fmt.Errorf("path is reached through a symlinked skills root; refusing mutation: %s", path)
+	}
+	return nil
+}
+
+// DestructiveSkillInstallPaths returns every install path a skills CLI
+// remove/add for skillName would touch under current agent locations at the
+// given scope. Includes empty/unobserved roots. agentFilter, when non-empty,
+// restricts to those agent names; otherwise all agents at scope are included
+// (matching skills remove without --agent, which targets every known agent).
+// Fail closed when skillName is empty or no locations match.
+func DestructiveSkillInstallPaths(cwd, skillName string, scope model.Scope, agentFilter []string) ([]string, error) {
+	return DestructiveSkillInstallPathsWithEnv(cwd, skillName, scope, agentFilter, DefaultEnv())
+}
+
+// DestructiveSkillInstallPathsWithEnv is DestructiveSkillInstallPaths with an
+// explicit Env.
+func DestructiveSkillInstallPathsWithEnv(cwd, skillName string, scope model.Scope, agentFilter []string, e Env) ([]string, error) {
+	skillName = strings.TrimSpace(skillName)
+	if skillName == "" || skillName == "." || skillName == ".." {
+		return nil, fmt.Errorf("skill identity is empty or invalid")
+	}
+	// Install identity is a single path base (skills CLI sanitizeName / basename).
+	if filepath.Base(skillName) != skillName || strings.Contains(skillName, string(filepath.Separator)) {
+		return nil, fmt.Errorf("skill identity must be a single path base")
+	}
+
+	filter := map[string]bool{}
+	for _, a := range agentFilter {
+		if a != "" {
+			filter[a] = true
+		}
+	}
+	locs := LocationsWithEnv(cwd, e)
+	seen := map[string]bool{}
+	var paths []string
+	matchedLocs := 0
+	for _, loc := range locs {
+		if loc.Scope != scope {
+			continue
+		}
+		if len(filter) > 0 && !filter[loc.AgentName] {
+			continue
+		}
+		matchedLocs++
+		p := filepath.Join(filepath.Clean(loc.Root), skillName)
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		paths = append(paths, p)
+	}
+	if matchedLocs == 0 {
+		return nil, fmt.Errorf("no agent locations match scope %s for live shared-root validation", scope)
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("unable to resolve skill install paths for live shared-root validation")
+	}
+	return paths, nil
+}
+
+// locationContainingPath returns the most specific (longest root) known
+// location that contains path, if any.
+func locationContainingPath(path string, locs []Location) (Location, bool) {
+	path = filepath.Clean(path)
+	var best Location
+	found := false
+	for _, loc := range locs {
+		root := filepath.Clean(loc.Root)
+		if !pathInside(path, root) {
+			continue
+		}
+		if !found || len(root) > len(filepath.Clean(best.Root)) {
+			best = loc
+			found = true
+		}
+	}
+	return best, found
+}
+
 // isUnderAnyGlobalRoot reports whether path is equal to, or nested inside, any
 // of the global skills roots. Matching is path-boundary aware so that
 // ~/.agents/skills-foo is not treated as inside ~/.agents/skills.
 func isUnderAnyGlobalRoot(path string, roots map[string]bool) bool {
 	for r := range roots {
-		r = filepath.Clean(r)
-		if path == r {
-			return true
-		}
-		if strings.HasPrefix(path, r+string(filepath.Separator)) {
+		if pathInside(path, r) {
 			return true
 		}
 	}

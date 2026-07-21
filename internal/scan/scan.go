@@ -260,6 +260,7 @@ func scanDisabledLocation(loc agents.Location, skills map[string]*model.Skill) {
 			if st, err := os.Stat(target); err != nil || !st.IsDir() {
 				sk := ensureSkill(skills, loc.Scope, entry.Name(), entry.Name(), "")
 				addObservedPath(sk, observed)
+				addSharedScopeRootIssue(sk, loc, observed.Path)
 				continue
 			}
 			parseDir = target
@@ -272,6 +273,7 @@ func scanDisabledLocation(loc agents.Location, skills map[string]*model.Skill) {
 		if err != nil {
 			sk := ensureSkill(skills, loc.Scope, entry.Name(), entry.Name(), "")
 			addObservedPath(sk, observed)
+			addSharedScopeRootIssue(sk, loc, observed.Path)
 			issueType := "invalid_frontmatter"
 			if errors.Is(err, os.ErrNotExist) {
 				issueType = "missing_skill_md"
@@ -288,7 +290,22 @@ func scanDisabledLocation(loc agents.Location, skills map[string]*model.Skill) {
 			sk.Preview = doc.Raw
 		}
 		addObservedPath(sk, observed)
+		addSharedScopeRootIssue(sk, loc, observed.Path)
 	}
+}
+
+// addSharedScopeRootIssue records the shared_scope_root warning for an
+// observation reached through a symlinked scope root (active or disabled).
+func addSharedScopeRootIssue(sk *model.Skill, loc agents.Location, path string) {
+	if sk == nil || !loc.SharedRoot {
+		return
+	}
+	sk.AddHealthIssue(model.HealthIssue{
+		Type:     "shared_scope_root",
+		Severity: "warning",
+		Message:  sharedScopeRootMessage(loc),
+		Path:     path,
+	})
 }
 
 type locationScanCacheKey struct {
@@ -602,14 +619,7 @@ func applyScannedLocationRecords(loc agents.Location, skills map[string]*model.S
 		for _, issue := range record.healthIssues {
 			sk.AddHealthIssue(issue)
 		}
-		if loc.SharedRoot {
-			sk.AddHealthIssue(model.HealthIssue{
-				Type:     "shared_scope_root",
-				Severity: "warning",
-				Message:  sharedScopeRootMessage(loc),
-				Path:     observed.Path,
-			})
-		}
+		addSharedScopeRootIssue(sk, loc, observed.Path)
 	}
 }
 

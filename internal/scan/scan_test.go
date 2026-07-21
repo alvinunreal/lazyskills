@@ -847,3 +847,66 @@ func TestSharedScopeRootSymlinkFlagsOnlyTheSymlinkedAgent(t *testing.T) {
 		}
 	}
 }
+
+// TestSharedScopeRootDisabledObservationGetsHealthWarning ensures disabled
+// shelf observations under a shared scope root receive the same
+// shared_scope_root health warning as active observations.
+func TestSharedScopeRootDisabledObservationGetsHealthWarning(t *testing.T) {
+	home := withHome(t)
+	cwd := t.TempDir()
+
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	if err := os.MkdirAll(claudeSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Put the skill only on the disabled shelf under the shared codex root.
+	codexHome := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(claudeSkills, filepath.Join(codexHome, "skills")); err != nil {
+		t.Fatal(err)
+	}
+	disabled := filepath.Join(claudeSkills, ".lazyskills-disabled", "parked")
+	writeSkill(t, disabled, "Parked", "disabled shared skill")
+
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sk *model.Skill
+	for _, s := range res.Skills {
+		if s.Name == "Parked" {
+			sk = s
+			break
+		}
+	}
+	if sk == nil {
+		t.Fatalf("expected Parked skill, got %#v", res.Skills)
+	}
+	var codexDisabled *model.ObservedPath
+	for i := range sk.ObservedPaths {
+		op := &sk.ObservedPaths[i]
+		if op.Agent == "codex" && op.Status == model.StatusDisabled {
+			codexDisabled = op
+		}
+	}
+	if codexDisabled == nil {
+		t.Fatalf("expected codex disabled observation, got %#v", sk.ObservedPaths)
+	}
+	if !codexDisabled.SharedRoot {
+		t.Fatalf("expected disabled codex observation SharedRoot, got %#v", codexDisabled)
+	}
+	found := false
+	for _, issue := range sk.HealthIssues {
+		if issue.Type == "shared_scope_root" && issue.Path == codexDisabled.Path {
+			found = true
+			if issue.Severity != "warning" {
+				t.Fatalf("expected warning severity, got %#v", issue)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected shared_scope_root health issue on disabled path, got %#v", sk.HealthIssues)
+	}
+}

@@ -541,7 +541,7 @@ func TestBulkActionStopsOnFirstFailure(t *testing.T) {
 	for _, skill := range m.result.Skills {
 		m.selectedKeys[skillKey(skill)] = true
 	}
-	result, partialSuccess := m.runBatch(m.currentActions()[0].Exec.Batch)
+	result, partialSuccess := m.runBatch(m.currentActions()[0].ID, m.currentActions()[0].Exec.Batch)
 	if calls != 1 || result.ExitCode != 2 {
 		t.Fatalf("expected stop on first failure, calls=%d result=%#v", calls, result)
 	}
@@ -591,11 +591,15 @@ func TestDeleteBrokenSymlinkPartialFailureRescans(t *testing.T) {
 		t.Skip("permission-denied symlink removal path is not meaningful as root")
 	}
 	cwd := t.TempDir()
-	goodLink := filepath.Join(cwd, "good-broken")
+	skillsRoot := filepath.Join(cwd, ".agents", "skills")
+	if err := os.MkdirAll(skillsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	goodLink := filepath.Join(skillsRoot, "good-broken")
 	if err := os.Symlink(filepath.Join(cwd, "missing-good"), goodLink); err != nil {
 		t.Fatal(err)
 	}
-	lockedDir := filepath.Join(cwd, "locked")
+	lockedDir := filepath.Join(skillsRoot, "locked")
 	if err := os.Mkdir(lockedDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -644,7 +648,11 @@ func TestDeleteBrokenSymlinkFailureRescans(t *testing.T) {
 		t.Skip("permission-denied symlink removal path is not meaningful as root")
 	}
 	cwd := t.TempDir()
-	lockedDir := filepath.Join(cwd, "locked")
+	skillsRoot := filepath.Join(cwd, ".agents", "skills")
+	if err := os.MkdirAll(skillsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lockedDir := filepath.Join(skillsRoot, "locked")
 	if err := os.Mkdir(lockedDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -684,8 +692,12 @@ func TestDeleteBrokenSymlinkFailureRescans(t *testing.T) {
 
 func TestDeleteBrokenSymlinkRequiresScopedIdentity(t *testing.T) {
 	cwd := t.TempDir()
-	projectLink := filepath.Join(cwd, "project-broken")
-	globalLink := filepath.Join(cwd, "global-broken")
+	projectRoot := filepath.Join(cwd, ".agents", "skills")
+	if err := os.MkdirAll(projectRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectLink := filepath.Join(projectRoot, "project-broken")
+	globalLink := filepath.Join(projectRoot, "global-broken")
 	if err := os.Symlink(filepath.Join(cwd, "missing-project"), projectLink); err != nil {
 		t.Fatal(err)
 	}
@@ -732,8 +744,12 @@ func TestDeleteBrokenSymlinkRequiresScopedIdentity(t *testing.T) {
 
 func TestDeleteBrokenSymlinkTargetsMatchingScope(t *testing.T) {
 	cwd := t.TempDir()
-	projectLink := filepath.Join(cwd, "project-broken")
-	globalLink := filepath.Join(cwd, "global-broken")
+	projectRoot := filepath.Join(cwd, ".agents", "skills")
+	if err := os.MkdirAll(projectRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectLink := filepath.Join(projectRoot, "project-broken")
+	globalLink := filepath.Join(projectRoot, "global-broken")
 	if err := os.Symlink(filepath.Join(cwd, "missing-project"), projectLink); err != nil {
 		t.Fatal(err)
 	}
@@ -767,7 +783,11 @@ func TestDeleteBrokenSymlinkTargetsMatchingScope(t *testing.T) {
 
 func TestDeleteBrokenSymlinkRechecksPathBeforeRemove(t *testing.T) {
 	cwd := t.TempDir()
-	restoredFile := filepath.Join(cwd, "restored-file")
+	skillsRoot := filepath.Join(cwd, ".agents", "skills")
+	if err := os.MkdirAll(skillsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	restoredFile := filepath.Join(skillsRoot, "restored-file")
 	if err := os.WriteFile(restoredFile, []byte("do not delete"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -775,11 +795,11 @@ func TestDeleteBrokenSymlinkRechecksPathBeforeRemove(t *testing.T) {
 	if err := os.WriteFile(restoredTarget, []byte("target"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	restoredLink := filepath.Join(cwd, "restored-link")
+	restoredLink := filepath.Join(skillsRoot, "restored-link")
 	if err := os.Symlink(restoredTarget, restoredLink); err != nil {
 		t.Fatal(err)
 	}
-	brokenLink := filepath.Join(cwd, "still-broken")
+	brokenLink := filepath.Join(skillsRoot, "still-broken")
 	if err := os.Symlink(filepath.Join(cwd, "missing"), brokenLink); err != nil {
 		t.Fatal(err)
 	}
@@ -818,7 +838,7 @@ func TestDeleteBrokenSymlinkRechecksPathBeforeRemove(t *testing.T) {
 
 func TestDeleteBrokenSymlinkNoopReportsAndRescans(t *testing.T) {
 	cwd := t.TempDir()
-	missingLink := filepath.Join(cwd, "already-gone")
+	missingLink := filepath.Join(cwd, ".agents", "skills", "already-gone")
 	m := appModel{cwd: cwd, width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{{
 		Name:          "Broken",
 		Scope:         model.ScopeProject,
@@ -1118,6 +1138,10 @@ func TestExecuteRemovePrunesProjectLockEntry(t *testing.T) {
 	if err := os.WriteFile(lockPath, []byte(`{"version":1,"skills":{"ghost":{"source":"o/r"},"keep":{"source":"o/r"}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	ghostPath := filepath.Join(dir, ".agents", "skills", "ghost")
+	if err := os.MkdirAll(ghostPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	originalRunExec := runExec
 	runExec = func(spec runner.ExecSpec) runner.Result {
@@ -1125,7 +1149,16 @@ func TestExecuteRemovePrunesProjectLockEntry(t *testing.T) {
 	}
 	t.Cleanup(func() { runExec = originalRunExec })
 
-	m := appModel{cwd: dir, width: 120, height: 32}
+	m := appModel{
+		cwd: dir, width: 120, height: 32,
+		result: model.ScanResult{Skills: []*model.Skill{{
+			Name:  "ghost",
+			Scope: model.ScopeProject,
+			ObservedPaths: []model.ObservedPath{{
+				Path: ghostPath, Scope: model.ScopeProject, Agent: "opencode", Status: model.StatusCopy,
+			}},
+		}}},
+	}
 	action := actions.CommandPreview{
 		ID:           "remove",
 		ConfirmValue: "ghost",
@@ -1480,19 +1513,36 @@ func TestConfirmationOverlayCopyMatchesRisk(t *testing.T) {
 }
 
 func actionTestModel(cwd string) appModel {
+	skillPath := filepath.Join(cwd, ".agents", "skills", "deploy-skill")
 	return appModel{cwd: cwd, width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{{
 		Name:          "Deploy Skill",
 		Description:   "desc",
 		Scope:         model.ScopeProject,
-		CanonicalPath: "/tmp/deploy-skill",
+		CanonicalPath: skillPath,
 		LocalLock:     &model.LocalLockEntry{Source: "owner/repo"},
+		ObservedPaths: []model.ObservedPath{{
+			Path:   skillPath,
+			Scope:  model.ScopeProject,
+			Agent:  "opencode",
+			Status: model.StatusCopy,
+		}},
 	}}}}
 }
 
 func bulkActionTestModel(cwd string) appModel {
+	one := filepath.Join(cwd, ".agents", "skills", "one")
+	two := filepath.Join(cwd, ".agents", "skills", "two")
 	return appModel{cwd: cwd, width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{
-		{Name: "One", Description: "desc", Scope: model.ScopeProject, CanonicalPath: "/tmp/one", LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
-		{Name: "Two", Description: "desc", Scope: model.ScopeProject, CanonicalPath: "/tmp/two", LocalLock: &model.LocalLockEntry{Source: "owner/repo"}},
+		{
+			Name: "One", Description: "desc", Scope: model.ScopeProject, CanonicalPath: one,
+			LocalLock:     &model.LocalLockEntry{Source: "owner/repo"},
+			ObservedPaths: []model.ObservedPath{{Path: one, Scope: model.ScopeProject, Agent: "opencode", Status: model.StatusCopy}},
+		},
+		{
+			Name: "Two", Description: "desc", Scope: model.ScopeProject, CanonicalPath: two,
+			LocalLock:     &model.LocalLockEntry{Source: "owner/repo"},
+			ObservedPaths: []model.ObservedPath{{Path: two, Scope: model.ScopeProject, Agent: "opencode", Status: model.StatusCopy}},
+		},
 	}}}
 }
 
@@ -3364,7 +3414,7 @@ func TestModalCommandPickerUXWithBulkSelection(t *testing.T) {
 
 func TestTuiEnableDisableActions(t *testing.T) {
 	tempDir := t.TempDir()
-	skillDir := filepath.Join(tempDir, "my-skill")
+	skillDir := filepath.Join(tempDir, ".aider-desk", "skills", "my-skill")
 	if err := os.MkdirAll(skillDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -3402,7 +3452,7 @@ func TestTuiEnableDisableActions(t *testing.T) {
 		t.Fatal("expected loadSnapshot cmd to be returned on success")
 	}
 
-	disabledPath := filepath.Join(tempDir, ".lazyskills-disabled", "my-skill")
+	disabledPath := filepath.Join(tempDir, ".aider-desk", "skills", ".lazyskills-disabled", "my-skill")
 	if _, err := os.Stat(disabledPath); err != nil {
 		t.Fatalf("expected disabled folder to exist at %s, got error: %v", disabledPath, err)
 	}
@@ -3435,7 +3485,7 @@ func TestTuiEnableDisableActions(t *testing.T) {
 
 func TestTuiEnableDisableEdgeCases(t *testing.T) {
 	tempDir := t.TempDir()
-	skillDir := filepath.Join(tempDir, "my-skill")
+	skillDir := filepath.Join(tempDir, ".aider-desk", "skills", "my-skill")
 	if err := os.MkdirAll(skillDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -3473,7 +3523,7 @@ func TestTuiEnableDisableEdgeCases(t *testing.T) {
 	}
 
 	// 2. Guard check: per-agent enable blocked when disabled path is shared by multiple agents
-	disabledPath := filepath.Join(tempDir, ".lazyskills-disabled", "my-skill")
+	disabledPath := filepath.Join(tempDir, ".aider-desk", "skills", ".lazyskills-disabled", "my-skill")
 	skDisabled := &model.Skill{
 		Name:  "my-skill",
 		Scope: model.ScopeProject,
@@ -3515,7 +3565,7 @@ func TestTuiEnableDisableEdgeCases(t *testing.T) {
 	}
 
 	// 4. Preflight validate dest already exists
-	destDir := filepath.Join(tempDir, ".lazyskills-disabled", "my-skill")
+	destDir := filepath.Join(tempDir, ".aider-desk", "skills", ".lazyskills-disabled", "my-skill")
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -3680,24 +3730,44 @@ func TestSharedRootGatesSourceEnableDisableActions(t *testing.T) {
 
 // TestSharedRootMoveHandlerRefusesRename is the defense-in-depth check on the
 // exec handler itself: even if a stale or forged action offers a move whose
-// src is a shared-root path, the handler must re-check m.result.Skills and
-// abort the whole plan without renaming anything.
+// src is currently reached through a shared scope root, the handler must
+// re-check live ancestry and abort the whole plan without renaming anything.
 func TestSharedRootMoveHandlerRefusesRename(t *testing.T) {
-	tempDir := t.TempDir()
-	skillDir := filepath.Join(tempDir, "shared-skill")
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	if err := os.MkdirAll(claudeSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	codexHome := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(claudeSkills, filepath.Join(codexHome, "skills")); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(codexHome, "skills", "shared-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(skillDir, "SKILL.md")
+	if err := os.WriteFile(marker, []byte("canonical"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	m := appModel{
-		cwd: tempDir,
+		cwd: cwd,
 		result: model.ScanResult{
 			Skills: []*model.Skill{
 				{
 					Name:  "shared-skill",
 					Scope: model.ScopeGlobal,
+					// Scan-time flag deliberately false: execution must not
+					// trust cached SharedRoot alone.
 					ObservedPaths: []model.ObservedPath{
-						{Path: skillDir, Scope: model.ScopeGlobal, Agent: "codex", Status: model.StatusCopy, SharedRoot: true},
+						{Path: skillDir, Scope: model.ScopeGlobal, Agent: "codex", Status: model.StatusCopy, SharedRoot: false},
 					},
 				},
 			},
@@ -3717,11 +3787,261 @@ func TestSharedRootMoveHandlerRefusesRename(t *testing.T) {
 	if resAppModel.actionResult == nil || !strings.Contains(resAppModel.actionResult.Err, "symlinked") {
 		t.Fatalf("expected actionResult to carry a shared-root refusal, got: %+v", resAppModel.actionResult)
 	}
-	if _, err := os.Stat(skillDir); err != nil {
-		t.Fatalf("expected the shared-root directory to remain untouched, got error: %v", err)
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "canonical" {
+		t.Fatalf("expected canonical content untouched, data=%q err=%v", data, err)
 	}
-	if _, err := os.Stat(filepath.Join(tempDir, ".lazyskills-disabled", "shared-skill")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(codexHome, "skills", ".lazyskills-disabled", "shared-skill")); !os.IsNotExist(err) {
 		t.Fatal("expected no disabled shelf entry to be created for the shared-root path")
+	}
+}
+
+// TestLiveTopologyChangeRefusesStaleSourceAndDestMove covers the P1 case where
+// an owned scope root is replaced by a symlink after scan/preview but before
+// execution: both source and destination parent chains must be refused without
+// mutating canonical content.
+func TestLiveTopologyChangeRefusesStaleSourceAndDestMove(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	if err := os.MkdirAll(claudeSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Canonical content that must not be moved.
+	canonicalSkill := filepath.Join(claudeSkills, "owned-skill")
+	if err := os.MkdirAll(canonicalSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(canonicalSkill, "MARKER")
+	if err := os.WriteFile(marker, []byte("do-not-move"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// At scan time codex skills is a real owned directory with its own copy.
+	codexSkills := filepath.Join(home, ".codex", "skills")
+	if err := os.MkdirAll(codexSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(codexSkills, "owned-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "MARKER"), []byte("codex-copy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// After scan: replace the owned codex skills root with a symlink into
+	// claude's canonical skills. The skill path string is unchanged.
+	if err := os.RemoveAll(codexSkills); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(claudeSkills, codexSkills); err != nil {
+		t.Fatal(err)
+	}
+	// Through the new symlink, skillDir now resolves to canonical content.
+	if data, err := os.ReadFile(filepath.Join(skillDir, "MARKER")); err != nil || string(data) != "do-not-move" {
+		t.Fatalf("precondition: skillDir should now read canonical content, data=%q err=%v", data, err)
+	}
+
+	m := appModel{
+		cwd: cwd,
+		result: model.ScanResult{
+			Skills: []*model.Skill{{
+				Name:  "owned-skill",
+				Scope: model.ScopeGlobal,
+				ObservedPaths: []model.ObservedPath{{
+					Path: skillDir, Scope: model.ScopeGlobal, Agent: "codex", Status: model.StatusCopy, SharedRoot: false,
+				}},
+			}},
+		},
+	}
+	action := actions.CommandPreview{
+		ID:   "disable_skill",
+		Exec: actions.ExecSpec{Internal: "disable_skill", Args: []string{skillDir}},
+	}
+	resModel, cmd := m.executeAction(action)
+	if cmd != nil {
+		t.Fatal("expected live topology guard to refuse the move")
+	}
+	res := resModel.(appModel)
+	if res.actionResult == nil || !strings.Contains(res.actionResult.Err, "symlinked") {
+		t.Fatalf("expected symlinked-root refusal, got %#v", res.actionResult)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "do-not-move" {
+		t.Fatalf("canonical content must remain unmoved, data=%q err=%v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(claudeSkills, ".lazyskills-disabled", "owned-skill")); !os.IsNotExist(err) {
+		t.Fatal("expected no disabled shelf under the canonical root")
+	}
+}
+
+// TestLiveTopologyAllowsNormalSkillEntrySymlink ensures the final skill entry
+// may itself be a symlink under an owned root without being rejected.
+func TestLiveTopologyAllowsNormalSkillEntrySymlink(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	if err := os.MkdirAll(claudeSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realSkill := filepath.Join(home, "real-skill-body")
+	if err := os.MkdirAll(realSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realSkill, "SKILL.md"), []byte("body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(claudeSkills, "linked-skill")
+	if err := os.Symlink(realSkill, entry); err != nil {
+		t.Fatal(err)
+	}
+
+	m := appModel{
+		cwd: cwd,
+		result: model.ScanResult{Skills: []*model.Skill{{
+			Name:  "linked-skill",
+			Scope: model.ScopeGlobal,
+			ObservedPaths: []model.ObservedPath{{
+				Path: entry, Scope: model.ScopeGlobal, Agent: "claude-code", Status: model.StatusSymlink,
+			}},
+		}}},
+	}
+	action := actions.CommandPreview{
+		ID:   "disable_skill",
+		Exec: actions.ExecSpec{Internal: "disable_skill", Args: []string{entry}},
+	}
+	_, cmd := m.executeAction(action)
+	if cmd == nil {
+		t.Fatal("expected skill-entry symlink under owned root to be movable")
+	}
+	disabled := filepath.Join(claudeSkills, ".lazyskills-disabled", "linked-skill")
+	if _, err := os.Lstat(disabled); err != nil {
+		t.Fatalf("expected disabled shelf entry for skill-entry symlink, err=%v", err)
+	}
+	if _, err := os.Lstat(entry); !os.IsNotExist(err) {
+		t.Fatalf("expected active entry to be gone after disable, err=%v", err)
+	}
+	// Canonical body remains reachable via the moved symlink.
+	if _, err := os.Stat(filepath.Join(realSkill, "SKILL.md")); err != nil {
+		t.Fatalf("expected real skill body preserved, err=%v", err)
+	}
+}
+
+// TestLiveUnsafePathBlocksExternalRemoveClosure ensures remove execution does
+// not invoke runExec after a live shared-root path is detected.
+func TestLiveUnsafePathBlocksExternalRemoveClosure(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	if err := os.MkdirAll(claudeSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	codexHome := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(claudeSkills, filepath.Join(codexHome, "skills")); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(codexHome, "skills", "shared")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	old := runExec
+	runExec = func(spec runner.ExecSpec) runner.Result {
+		called = true
+		return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
+	}
+	t.Cleanup(func() { runExec = old })
+
+	m := appModel{
+		cwd: cwd,
+		result: model.ScanResult{Skills: []*model.Skill{{
+			Name:  "shared",
+			Scope: model.ScopeGlobal,
+			ObservedPaths: []model.ObservedPath{{
+				Path: skillDir, Scope: model.ScopeGlobal, Agent: "codex", Status: model.StatusCopy, SharedRoot: false,
+			}},
+		}}},
+	}
+	action := actions.CommandPreview{
+		ID:           "remove",
+		ConfirmValue: "shared",
+		Mutates:      true,
+		Exec:         actions.ExecSpec{Program: "skills", Args: []string{"remove", "shared", "--yes", "-g"}},
+	}
+	resModel, cmd := m.executeAction(action)
+	if cmd != nil {
+		// Synchronous refusal should not schedule a command.
+		t.Fatal("expected external remove to be refused before scheduling runExec")
+	}
+	res := resModel.(appModel)
+	if res.actionResult == nil || !strings.Contains(res.actionResult.Err, "symlinked") {
+		t.Fatalf("expected shared-root refusal, got %#v", res.actionResult)
+	}
+	if called {
+		t.Fatal("runExec must not run after live unsafe path detection")
+	}
+}
+
+// TestLiveUnsafePathBlocksBulkExecutionClosure ensures bulk execution validates
+// upfront and does not run any batch command when a live unsafe path is found.
+func TestLiveUnsafePathBlocksBulkExecutionClosure(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	if err := os.MkdirAll(claudeSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	codexHome := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(claudeSkills, filepath.Join(codexHome, "skills")); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(codexHome, "skills", "shared")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := 0
+	old := runExec
+	runExec = func(spec runner.ExecSpec) runner.Result {
+		calls++
+		return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
+	}
+	t.Cleanup(func() { runExec = old })
+
+	m := appModel{
+		cwd: cwd,
+		result: model.ScanResult{Skills: []*model.Skill{{
+			Name:  "shared",
+			Scope: model.ScopeGlobal,
+			ObservedPaths: []model.ObservedPath{{
+				Path: skillDir, Scope: model.ScopeGlobal, Agent: "codex", Status: model.StatusCopy,
+			}},
+		}}},
+	}
+	batch := []actions.ExecSpec{{Program: "skills", Args: []string{"remove", "shared", "--yes", "-g"}}}
+	result, partial := m.runBatch("bulk_remove", batch)
+	if result.ExitCode == 0 || !strings.Contains(result.Err, "symlinked") {
+		t.Fatalf("expected bulk upfront refusal, got %#v", result)
+	}
+	if partial {
+		t.Fatal("upfront refusal must not count as partial success")
+	}
+	if calls != 0 {
+		t.Fatalf("expected no batch commands to run, calls=%d", calls)
 	}
 }
 
@@ -4045,5 +4365,270 @@ func TestTUIPreviewRenderIgnoresCompletionWhenNewerRenderInFlight(t *testing.T) 
 	}
 	if cmd != nil {
 		t.Fatalf("expected no duplicate dispatch while newer render remains in flight, got %v", cmd)
+	}
+}
+
+// TestMoveRejectsSymlinkedNestedShelfParent ensures a .lazyskills-disabled
+// parent that is a symlink is refused and canonical shelf content is untouched.
+func TestMoveRejectsSymlinkedNestedShelfParent(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	if err := os.MkdirAll(claudeSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(claudeSkills, "shelved-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "MARKER"), []byte("src"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Destination parent chain: scope root is real, but .lazyskills-disabled
+	// is a symlink into a canonical shelf elsewhere.
+	canonicalShelf := filepath.Join(home, "other-agent-disabled")
+	if err := os.MkdirAll(canonicalShelf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(canonicalShelf, "KEEP"), []byte("canonical"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(canonicalShelf, filepath.Join(claudeSkills, ".lazyskills-disabled")); err != nil {
+		t.Fatal(err)
+	}
+
+	m := appModel{cwd: cwd}
+	action := actions.CommandPreview{
+		ID:   "disable_skill",
+		Exec: actions.ExecSpec{Internal: "disable_skill", Args: []string{skillDir}},
+	}
+	resModel, cmd := m.executeAction(action)
+	if cmd != nil {
+		t.Fatal("expected move to refuse symlinked nested shelf parent")
+	}
+	res := resModel.(appModel)
+	if res.actionResult == nil || !strings.Contains(res.actionResult.Err, "symlinked") {
+		t.Fatalf("expected symlinked refusal, got %#v", res.actionResult)
+	}
+	if data, err := os.ReadFile(filepath.Join(skillDir, "MARKER")); err != nil || string(data) != "src" {
+		t.Fatalf("source must remain, data=%q err=%v", data, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(canonicalShelf, "KEEP")); err != nil || string(data) != "canonical" {
+		t.Fatalf("canonical shelf must remain untouched, data=%q err=%v", data, err)
+	}
+	// No skill entry should have been created under the aliased shelf.
+	if _, err := os.Stat(filepath.Join(canonicalShelf, "shelved-skill")); !os.IsNotExist(err) {
+		t.Fatal("expected no skill entry under canonical aliased shelf")
+	}
+}
+
+// TestMoveRejectsTopologySwapBeforeMkdirAll swaps the destination scope root
+// to a symlink after preflight has passed, on the first execution-time check
+// (before MkdirAll). MkdirAll must not create directories under the canonical
+// target, and the rename must not run.
+func TestMoveRejectsTopologySwapBeforeMkdirAll(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	if err := os.MkdirAll(claudeSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Canonical tree that must not receive mkdir/rename side effects.
+	if err := os.WriteFile(filepath.Join(claudeSkills, "CANONICAL"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	codexSkills := filepath.Join(home, ".codex", "skills")
+	if err := os.MkdirAll(codexSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(codexSkills, "move-me")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "MARKER"), []byte("codex"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Preflight sees a safe owned root. On the first execution-time
+	// checkDestructivePath call (before MkdirAll), replace codex skills with
+	// a symlink into claude's canonical skills.
+	calls := 0
+	old := checkDestructivePath
+	checkDestructivePath = func(path, checkCwd string) error {
+		calls++
+		// Preflight: src + dest = 2 calls. Third call is first execution check.
+		if calls == 3 {
+			if err := os.RemoveAll(codexSkills); err != nil {
+				t.Fatalf("swap remove: %v", err)
+			}
+			if err := os.Symlink(claudeSkills, codexSkills); err != nil {
+				t.Fatalf("swap symlink: %v", err)
+			}
+		}
+		return old(path, checkCwd)
+	}
+	t.Cleanup(func() { checkDestructivePath = old })
+
+	m := appModel{cwd: cwd}
+	action := actions.CommandPreview{
+		ID:   "disable_skill",
+		Exec: actions.ExecSpec{Internal: "disable_skill", Args: []string{skillDir}},
+	}
+	resModel, cmd := m.executeAction(action)
+	if cmd != nil {
+		t.Fatal("expected topology-swap guard to refuse before/without successful move")
+	}
+	res := resModel.(appModel)
+	if res.actionResult == nil || !strings.Contains(res.actionResult.Err, "symlinked") {
+		t.Fatalf("expected symlinked refusal after topology swap, got %#v", res.actionResult)
+	}
+	// Canonical tree must not have gained a disabled shelf from MkdirAll.
+	if _, err := os.Stat(filepath.Join(claudeSkills, ".lazyskills-disabled")); !os.IsNotExist(err) {
+		t.Fatal("MkdirAll must not create .lazyskills-disabled under the canonical target after topology swap")
+	}
+	if data, err := os.ReadFile(filepath.Join(claudeSkills, "CANONICAL")); err != nil || string(data) != "keep" {
+		t.Fatalf("canonical marker must remain, data=%q err=%v", data, err)
+	}
+}
+
+// TestExternalRemoveValidatesUnobservedAliasedRoot covers: only one observed
+// safe root exists in scan results, but an unobserved agent root that the
+// skills CLI would still target becomes an alias before execution — runExec
+// must not be invoked.
+func TestExternalRemoveValidatesUnobservedAliasedRoot(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	skillDir := filepath.Join(claudeSkills, "only-claude")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "MARKER"), []byte("safe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Codex root starts as a real empty directory (unobserved — skill not there).
+	codexSkills := filepath.Join(home, ".codex", "skills")
+	if err := os.MkdirAll(codexSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// After "scan": alias the unobserved codex root into claude's tree.
+	if err := os.RemoveAll(codexSkills); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(claudeSkills, codexSkills); err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	old := runExec
+	runExec = func(spec runner.ExecSpec) runner.Result {
+		called = true
+		return runner.Result{Program: spec.Program, Args: spec.Args, Cwd: spec.Cwd, ExitCode: 0}
+	}
+	t.Cleanup(func() { runExec = old })
+
+	m := appModel{
+		cwd: cwd,
+		// Stale observations: only the safe claude path is known.
+		result: model.ScanResult{Skills: []*model.Skill{{
+			Name:  "only-claude",
+			Scope: model.ScopeGlobal,
+			ObservedPaths: []model.ObservedPath{{
+				Path: skillDir, Scope: model.ScopeGlobal, Agent: "claude-code", Status: model.StatusCopy, SharedRoot: false,
+			}},
+		}}},
+	}
+	action := actions.CommandPreview{
+		ID:           "remove",
+		ConfirmValue: "only-claude",
+		Mutates:      true,
+		Exec:         actions.ExecSpec{Program: "skills", Args: []string{"remove", "only-claude", "--yes", "-g"}},
+	}
+	resModel, cmd := m.executeAction(action)
+	if cmd != nil {
+		t.Fatal("expected remove to refuse due to unobserved aliased agent root")
+	}
+	res := resModel.(appModel)
+	if res.actionResult == nil || !strings.Contains(res.actionResult.Err, "symlinked") {
+		t.Fatalf("expected shared-root refusal from unobserved aliased root, got %#v", res.actionResult)
+	}
+	if called {
+		t.Fatal("runExec must not run when an unobserved targeted root is live-unsafe")
+	}
+	if data, err := os.ReadFile(filepath.Join(skillDir, "MARKER")); err != nil || string(data) != "safe" {
+		t.Fatalf("canonical skill must remain, data=%q err=%v", data, err)
+	}
+}
+
+// TestBrokenLinkDeleteRejectsSymlinkedNestedParent ensures broken-link
+// deletion refuses when a parent below the scope root is a symlink.
+func TestBrokenLinkDeleteRejectsSymlinkedNestedParent(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	if err := os.MkdirAll(claudeSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Nested parent becomes a symlink to a canonical directory holding a
+	// broken link name that must not be deleted through the alias.
+	canonicalNest := filepath.Join(home, "canonical-nest")
+	if err := os.MkdirAll(canonicalNest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	brokenInCanonical := filepath.Join(canonicalNest, "broken-link")
+	if err := os.Symlink(filepath.Join(home, "missing-target"), brokenInCanonical); err != nil {
+		t.Fatal(err)
+	}
+	nestLink := filepath.Join(claudeSkills, "nested")
+	if err := os.Symlink(canonicalNest, nestLink); err != nil {
+		t.Fatal(err)
+	}
+	// Path as observed through the owned scope root.
+	observedBroken := filepath.Join(nestLink, "broken-link")
+
+	m := appModel{
+		cwd: cwd,
+		result: model.ScanResult{Skills: []*model.Skill{{
+			Name:  "Broken",
+			Scope: model.ScopeGlobal,
+			ObservedPaths: []model.ObservedPath{{
+				Path: observedBroken, Scope: model.ScopeGlobal, Agent: "claude-code", Status: model.StatusBrokenSymlink, SharedRoot: false,
+			}},
+		}}},
+	}
+	action := actions.CommandPreview{
+		ID:           "delete_broken_symlink",
+		ConfirmValue: "Broken",
+		Exec:         actions.ExecSpec{Internal: "delete_broken_symlink", Args: []string{string(model.ScopeGlobal), "Broken"}},
+	}
+	updated, cmd := m.executeAction(action)
+	next := updated.(appModel)
+	if next.actionResult == nil || next.actionResult.ExitCode != -1 {
+		t.Fatalf("expected failed delete due to symlinked nested parent, got %#v", next.actionResult)
+	}
+	if !strings.Contains(next.actionResult.Err, "symlinked") {
+		t.Fatalf("expected symlinked reason, got %#v", next.actionResult)
+	}
+	// Broken link under canonical nest must remain.
+	if _, err := os.Lstat(brokenInCanonical); err != nil {
+		t.Fatalf("expected canonical broken link to remain, err=%v", err)
+	}
+	// cmd may still rescan on failure paths; either way the link stays.
+	if cmd != nil {
+		_, _ = next.Update(cmd())
+	}
+	if _, err := os.Lstat(brokenInCanonical); err != nil {
+		t.Fatalf("expected canonical broken link to remain after handler, err=%v", err)
 	}
 }
