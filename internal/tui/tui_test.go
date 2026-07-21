@@ -839,6 +839,9 @@ func TestDeleteBrokenSymlinkRechecksPathBeforeRemove(t *testing.T) {
 func TestDeleteBrokenSymlinkNoopReportsAndRescans(t *testing.T) {
 	cwd := t.TempDir()
 	missingLink := filepath.Join(cwd, ".agents", "skills", "already-gone")
+	if err := os.MkdirAll(filepath.Dir(missingLink), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	m := appModel{cwd: cwd, width: 120, height: 32, selected: 1, result: model.ScanResult{Skills: []*model.Skill{{
 		Name:          "Broken",
 		Scope:         model.ScopeProject,
