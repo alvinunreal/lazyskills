@@ -2,7 +2,13 @@ name: Publish to WinGet
 
 on:
   release:
-    types: [released]
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to publish to WinGet (e.g. v1.2.3)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -14,7 +20,8 @@ jobs:
       - name: Submit manifest PR to winget-pkgs
         uses: vedantmgoyal9/winget-releaser@v2
         with:
-          identifier: alvinunreal.lazyskills
+          identifier: AlvinUnreal.LazySkills
           installers-regex: 'lazyskills_Windows_.*\.zip'
           max-versions-to-keep: 5
+          release-tag: ${{ inputs.release_tag || github.event.release.tag_name }}
           token: ${{ secrets.WINGET_TOKEN }}
