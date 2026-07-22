@@ -30,8 +30,6 @@ func (m *mockFetcher) FetchRelease(ctx context.Context, url string) (*selfupdate
 
 func TestCLIUpdate(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	oldOut := os.Stdout
-	defer func() { os.Stdout = oldOut }()
 
 	oldVer := buildinfo.Version
 	oldCommit := buildinfo.Commit
@@ -51,23 +49,8 @@ func TestCLIUpdate(t *testing.T) {
 	selfupdate.DefaultPlanFetcher = &mockFetcher{release: mockRel}
 	defer func() { selfupdate.DefaultPlanFetcher = nil }()
 
-	// Help function to capture stdout during run
-	captureStdout := func(args []string) (string, error) {
-		r, w, _ := os.Pipe()
-		os.Stdout = w
-
-		err := run(args)
-
-		w.Close()
-		var buf bytes.Buffer
-		_, _ = io.Copy(&buf, r)
-		os.Stdout = oldOut
-
-		return buf.String(), err
-	}
-
 	// 1. Check only
-	out, err := captureStdout([]string{"update", "--check"})
+	out, err := captureRunStdout(t, []string{"update", "--check"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,7 +59,7 @@ func TestCLIUpdate(t *testing.T) {
 	}
 
 	// 2. Print command
-	out, err = captureStdout([]string{"update", "--print-command"})
+	out, err = captureRunStdout(t, []string{"update", "--print-command"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,7 +73,7 @@ func TestCLIUpdate(t *testing.T) {
 	}
 
 	// 3. Default (no --yes)
-	out, err = captureStdout([]string{"update"})
+	out, err = captureRunStdout(t, []string{"update"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,7 +82,7 @@ func TestCLIUpdate(t *testing.T) {
 	}
 
 	// 4. Test --yes returns non-zero error before calling Plan
-	_, errYes := captureStdout([]string{"update", "--yes"})
+	_, errYes := captureRunStdout(t, []string{"update", "--yes"})
 	if errYes == nil {
 		t.Fatal("expected error with --yes, got nil")
 	}
@@ -110,7 +93,7 @@ func TestCLIUpdate(t *testing.T) {
 
 	// 5. Already up-to-date behavior.
 	buildinfo.Version = "v1.1.0"
-	out, err = captureStdout([]string{"update"})
+	out, err = captureRunStdout(t, []string{"update"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,7 +104,7 @@ func TestCLIUpdate(t *testing.T) {
 	// 6. Test LAZYSKILLS_NO_UPDATE_CHECK prints the disable reason instead of Already up to date
 	os.Setenv("LAZYSKILLS_NO_UPDATE_CHECK", "1")
 	defer os.Setenv("LAZYSKILLS_NO_UPDATE_CHECK", "")
-	out, err = captureStdout([]string{"update"})
+	out, err = captureRunStdout(t, []string{"update"})
 	if err != nil {
 		t.Fatalf("unexpected error with env check: %v", err)
 	}
@@ -146,40 +129,26 @@ func TestCLIFind(t *testing.T) {
 
 	t.Setenv("SKILLS_API_URL", server.URL)
 
-	oldOut := os.Stdout
-	defer func() { os.Stdout = oldOut }()
-
-	captureStdout := func(args []string) (string, error) {
-		r, w, _ := os.Pipe()
-		os.Stdout = w
-		err := run(args)
-		w.Close()
-		var buf bytes.Buffer
-		_, _ = io.Copy(&buf, r)
-		os.Stdout = oldOut
-		return buf.String(), err
-	}
-
 	// 1. Missing json flag
-	_, err := captureStdout([]string{"find", "test-query"})
+	_, err := captureRunStdout(t, []string{"find", "test-query"})
 	if err == nil || !strings.Contains(err.Error(), "usage: lazyskills find --json <query>") {
 		t.Fatalf("expected usage error without --json, got: %v", err)
 	}
 
 	// 2. Missing query
-	_, err = captureStdout([]string{"find", "--json"})
+	_, err = captureRunStdout(t, []string{"find", "--json"})
 	if err == nil || !strings.Contains(err.Error(), "usage: lazyskills find --json <query>") {
 		t.Fatalf("expected usage error without query, got: %v", err)
 	}
 
 	// 3. Multi query or too many args
-	_, err = captureStdout([]string{"find", "--json", "q1", "q2"})
+	_, err = captureRunStdout(t, []string{"find", "--json", "q1", "q2"})
 	if err == nil || !strings.Contains(err.Error(), "usage: lazyskills find --json <query>") {
 		t.Fatalf("expected usage error with multiple queries, got: %v", err)
 	}
 
 	// 4. Success JSON
-	out, err := captureStdout([]string{"find", "--json", "test-query"})
+	out, err := captureRunStdout(t, []string{"find", "--json", "test-query"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -200,4 +169,22 @@ func TestCLIFind(t *testing.T) {
 	if len(res.Results) != 1 || res.Results[0].Slug != "skill-1" {
 		t.Errorf("unexpected results: %+v", res.Results)
 	}
+}
+
+func captureRunStdout(t *testing.T, args []string) (string, error) {
+	t.Helper()
+	oldOut := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldOut }()
+
+	runErr := run(args)
+	_ = w.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	_ = r.Close()
+	return buf.String(), runErr
 }

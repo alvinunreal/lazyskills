@@ -141,6 +141,58 @@ func TestBulkActionsBuildBatchCommands(t *testing.T) {
 	}
 }
 
+func TestRestoreBuildsBatchFromMissingLockEntries(t *testing.T) {
+	skills := []*model.Skill{
+		{
+			Name:         "Project Missing",
+			Scope:        model.ScopeProject,
+			LocalLock:    &model.LocalLockEntry{Source: "owner/project"},
+			HealthIssues: []model.HealthIssue{{Type: "lock_without_files"}},
+		},
+		{
+			Name:         "Global Missing",
+			Scope:        model.ScopeGlobal,
+			GlobalLock:   &model.GlobalLockEntry{Source: "owner/global"},
+			HealthIssues: []model.HealthIssue{{Type: "lock_without_files"}},
+		},
+		{
+			Name:          "Already Installed",
+			Scope:         model.ScopeGlobal,
+			CanonicalPath: "/tmp/already-installed",
+			GlobalLock:    &model.GlobalLockEntry{Source: "owner/global"},
+		},
+	}
+
+	preview := ForRestoreWithResolver(skills, func() (string, []string) { return "skills", nil })
+	if !preview.Available || preview.ID != "restore_missing" {
+		t.Fatalf("expected available restore preview, got %#v", preview)
+	}
+	if preview.Title != "Restore 2 missing skills" || preview.ConfirmValue != "restore 2 skills" {
+		t.Fatalf("unexpected restore copy: %#v", preview)
+	}
+	if len(preview.Exec.Batch) != 2 {
+		t.Fatalf("expected only missing skills in restore batch, got %#v", preview.Exec.Batch)
+	}
+	if containsArg(preview.Exec.Batch[0].Args, "-g") {
+		t.Fatalf("project restore must not use global flag: %#v", preview.Exec.Batch[0].Args)
+	}
+	if !containsArg(preview.Exec.Batch[1].Args, "-g") {
+		t.Fatalf("global restore must use global flag: %#v", preview.Exec.Batch[1].Args)
+	}
+}
+
+func TestRestoreUsesSingularCopy(t *testing.T) {
+	preview := ForRestoreWithResolver([]*model.Skill{{
+		Name:         "Only One",
+		Scope:        model.ScopeProject,
+		LocalLock:    &model.LocalLockEntry{Source: "owner/project"},
+		HealthIssues: []model.HealthIssue{{Type: "lock_without_files"}},
+	}}, func() (string, []string) { return "skills", nil })
+	if preview.Title != "Restore 1 missing skill" || preview.ConfirmValue != "restore 1 skill" {
+		t.Fatalf("unexpected singular restore copy: %#v", preview)
+	}
+}
+
 func TestSharedRootSkillDisablesReinstallAndRemove(t *testing.T) {
 	sk := &model.Skill{
 		Name:          "Shared",

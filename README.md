@@ -104,6 +104,25 @@ For agent-friendly registry search without opening the TUI:
 lazyskills find --json "browser automation"
 ```
 
+### Restore from lock files
+
+Restore skills that are recorded in the project or global lock file but missing from disk:
+
+```bash
+lazyskills restore --global
+lazyskills restore --project
+lazyskills restore --all
+```
+
+Pass skill names to restore only those entries, or `--yes` to accept the preview non-interactively:
+
+```bash
+lazyskills restore --project code-review tdd
+lazyskills restore --global --yes
+```
+
+Without a scope flag, restore checks both scopes. Before each install it rescans and revalidates that skill’s lock identity and restore command, then aborts without running remaining commands if the skill disappeared, its lock metadata changed, or its command changed—reporting any skills already restored. That narrows races with concurrent installs; it does not make restore fully race-free.
+
 ## 🔄 Updates
 
 LazySkills can check for new releases and show the command to update your installation manually.
