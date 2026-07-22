@@ -71,6 +71,35 @@ func ForSkillsWithResolver(skills []*model.Skill, resolve SkillsResolver) []Comm
 	return previews
 }
 
+func ForRestoreWithResolver(skills []*model.Skill, resolve SkillsResolver) CommandPreview {
+	missing := make([]*model.Skill, 0, len(skills))
+	for _, skill := range skills {
+		if IsMissingLockedSkill(skill) {
+			missing = append(missing, skill)
+		}
+	}
+	if len(missing) == 0 {
+		return unavailablePreview("Restore missing skills", "no missing locked skills")
+	}
+	batch, ok, reason := bulkBatch(missing, resolve, "reinstall_update")
+	if !ok {
+		return unavailablePreview("Restore missing skills", reason)
+	}
+	count := len(missing)
+	noun := "skills"
+	if count == 1 {
+		noun = "skill"
+	}
+	return newBatchPreview(
+		"restore_missing",
+		fmt.Sprintf("Restore %d missing %s", count, noun),
+		batch,
+		"Reinstall locked skills whose files are missing.",
+		fmt.Sprintf("restore %d %s", count, noun),
+		false,
+	)
+}
+
 func AppLevelActions() []CommandPreview {
 	return AppLevelActionsWithResolver(ResolveSkillsCommand)
 }
@@ -318,7 +347,7 @@ func ForSkillWithResolver(sk *model.Skill, resolve SkillsResolver) []CommandPrev
 	} else {
 		previews = append(previews, unavailablePreview("Remove selected skill", reasonRemove))
 	}
-	if hasOrphanedLock(sk) {
+	if IsMissingLockedSkill(sk) {
 		previews = append(previews, pruneLockPreview(sk))
 	}
 	if hasBrokenSymlink(sk) {
@@ -351,9 +380,12 @@ func SharedRootReason(path string) string {
 	return fmt.Sprintf("skill files are reached through a symlinked skills root (%s); write actions are disabled to protect the shared canonical source", compat.SanitizeMetadata(path))
 }
 
-// hasOrphanedLock reports whether the skill is a lock entry whose files are
+// IsMissingLockedSkill reports whether the skill is a lock entry whose files are
 // gone from disk (the scan flags this as lock_without_files).
-func hasOrphanedLock(sk *model.Skill) bool {
+func IsMissingLockedSkill(sk *model.Skill) bool {
+	if sk == nil {
+		return false
+	}
 	for _, issue := range sk.HealthIssues {
 		if issue.Type == "lock_without_files" {
 			return true
