@@ -121,7 +121,7 @@ lazyskills restore --project code-review tdd
 lazyskills restore --global --yes
 ```
 
-Without a scope flag, restore checks both scopes. Installed skills are left unchanged.
+Without a scope flag, restore checks both scopes. Before each install it rescans and revalidates that skill’s lock identity and restore command, then aborts without running remaining commands if the skill disappeared, its lock metadata changed, or its command changed—reporting any skills already restored. That narrows races with concurrent installs; it does not make restore fully race-free.
 
 ## 🔄 Updates
 

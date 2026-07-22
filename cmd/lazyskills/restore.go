@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/alvinunreal/lazyskills/internal/actions"
@@ -20,6 +22,15 @@ var (
 	restoreRunExec                        = func(spec runner.ExecSpec) runner.Result { return (runner.OSRunner{}).Run(spec) }
 	restoreInput                io.Reader = os.Stdin
 )
+
+type restorePlanItem struct {
+	name       string
+	scope      model.Scope
+	localLock  *model.LocalLockEntry
+	globalLock *model.GlobalLockEntry
+	program    string
+	args       []string
+}
 
 func runRestore(args []string) error {
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
@@ -63,6 +74,11 @@ func runRestore(args []string) error {
 		return nil
 	}
 
+	// Immutable plan from the user-visible preview baseline.
+	plan, err := restoreBuildPlan(candidates, restoreResolveSkillsCommand)
+	if err != nil {
+		return err
+	}
 	preview := actions.ForRestoreWithResolver(candidates, restoreResolveSkillsCommand)
 	if !preview.Available {
 		return fmt.Errorf("restore unavailable: %s", preview.Reason)
@@ -86,24 +102,47 @@ func runRestore(args []string) error {
 	if err != nil {
 		return err
 	}
-	latestPreview := actions.ForRestoreWithResolver(restoreCandidates(latest.Skills, *global, *project, names), restoreResolveSkillsCommand)
-	if !latestPreview.Available || latestPreview.Command != preview.Command {
+	latestPlan, err := restoreBuildPlan(restoreCandidates(latest.Skills, *global, *project, names), restoreResolveSkillsCommand)
+	if err != nil {
+		return fmt.Errorf("skill state changed after preview; %w", err)
+	}
+	if !restorePlansEqual(plan, latestPlan) {
 		return fmt.Errorf("skill state changed after preview; run restore again")
 	}
-	preview = latestPreview
 
-	for _, spec := range preview.Exec.Batch {
-		result := restoreRunExec(runner.ExecSpec{Program: spec.Program, Args: spec.Args, Cwd: *cwd})
-		if result.ExitCode != 0 || result.Err != "" {
-			if result.Stderr != "" {
-				fmt.Fprintln(os.Stderr, result.Stderr)
-			}
-			detail := result.Err
-			if detail == "" {
-				detail = fmt.Sprintf("exit code %d", result.ExitCode)
-			}
-			return fmt.Errorf("restore command failed: %s", detail)
+	var succeeded []string
+	for _, item := range plan {
+		current, err := restoreScan(*cwd)
+		if err != nil {
+			return restorePartialError(succeeded, err)
 		}
+		skill := restoreLookupMissing(current.Skills, item.name, item.scope)
+		if skill == nil {
+			return restorePartialError(succeeded, fmt.Errorf("skill state changed after preview; [%s] %s is no longer missing; run restore again", item.scope, item.name))
+		}
+		if !restoreLockIdentityEqual(skill, item) {
+			return restorePartialError(succeeded, fmt.Errorf("skill state changed after preview; [%s] %s lock metadata changed; run restore again", item.scope, item.name))
+		}
+		program, args, ok, reason := restoreSkillCommand(skill, restoreResolveSkillsCommand)
+		if !ok {
+			return restorePartialError(succeeded, fmt.Errorf("skill state changed after preview; [%s] %s restore command unavailable: %s; run restore again", item.scope, item.name, reason))
+		}
+		if program != item.program || !slices.Equal(args, item.args) {
+			return restorePartialError(succeeded, fmt.Errorf("skill state changed after preview; [%s] %s restore command changed; run restore again", item.scope, item.name))
+		}
+
+		execResult := restoreRunExec(runner.ExecSpec{Program: program, Args: args, Cwd: *cwd})
+		if execResult.ExitCode != 0 || execResult.Err != "" {
+			if execResult.Stderr != "" {
+				fmt.Fprintln(os.Stderr, execResult.Stderr)
+			}
+			detail := execResult.Err
+			if detail == "" {
+				detail = fmt.Sprintf("exit code %d", execResult.ExitCode)
+			}
+			return restorePartialError(succeeded, fmt.Errorf("restore command failed for [%s] %s: %s", item.scope, item.name, detail))
+		}
+		succeeded = append(succeeded, restoreQualifiedName(item.scope, item.name))
 	}
 	fmt.Fprintln(os.Stdout, "Restore complete.")
 	return nil
@@ -127,4 +166,103 @@ func restoreCandidates(skills []*model.Skill, globalOnly, projectOnly bool, name
 		candidates = append(candidates, skill)
 	}
 	return candidates
+}
+
+func restoreBuildPlan(candidates []*model.Skill, resolve actions.SkillsResolver) ([]restorePlanItem, error) {
+	plan := make([]restorePlanItem, 0, len(candidates))
+	for _, skill := range candidates {
+		program, args, ok, reason := restoreSkillCommand(skill, resolve)
+		if !ok {
+			return nil, fmt.Errorf("restore unavailable: %s", reason)
+		}
+		plan = append(plan, restorePlanItem{
+			name:       skill.Name,
+			scope:      skill.Scope,
+			localLock:  cloneLocalLock(skill.LocalLock),
+			globalLock: cloneGlobalLock(skill.GlobalLock),
+			program:    program,
+			args:       args,
+		})
+	}
+	return plan, nil
+}
+
+func restorePlansEqual(a, b []restorePlanItem) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].name != b[i].name || a[i].scope != b[i].scope {
+			return false
+		}
+		if !reflect.DeepEqual(a[i].localLock, b[i].localLock) || !reflect.DeepEqual(a[i].globalLock, b[i].globalLock) {
+			return false
+		}
+		if a[i].program != b[i].program || !slices.Equal(a[i].args, b[i].args) {
+			return false
+		}
+	}
+	return true
+}
+
+func restoreSkillCommand(skill *model.Skill, resolve actions.SkillsResolver) (string, []string, bool, string) {
+	preview := actions.ForRestoreWithResolver([]*model.Skill{skill}, resolve)
+	if !preview.Available {
+		return "", nil, false, preview.Reason
+	}
+	if len(preview.Exec.Batch) != 1 {
+		return "", nil, false, "unexpected restore command batch"
+	}
+	spec := preview.Exec.Batch[0]
+	return spec.Program, append([]string{}, spec.Args...), true, ""
+}
+
+func restoreLookupMissing(skills []*model.Skill, name string, scope model.Scope) *model.Skill {
+	for _, skill := range skills {
+		if skill == nil || skill.Name != name || skill.Scope != scope {
+			continue
+		}
+		if actions.IsMissingLockedSkill(skill) {
+			return skill
+		}
+		return nil
+	}
+	return nil
+}
+
+func restoreLockIdentityEqual(skill *model.Skill, item restorePlanItem) bool {
+	if skill == nil {
+		return false
+	}
+	return reflect.DeepEqual(skill.LocalLock, item.localLock) && reflect.DeepEqual(skill.GlobalLock, item.globalLock)
+}
+
+func restoreQualifiedName(scope model.Scope, name string) string {
+	return fmt.Sprintf("[%s] %s", scope, name)
+}
+
+func restorePartialError(succeeded []string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if len(succeeded) == 0 {
+		return err
+	}
+	return fmt.Errorf("partial restore; already restored: %s; %w", strings.Join(succeeded, ", "), err)
+}
+
+func cloneLocalLock(lock *model.LocalLockEntry) *model.LocalLockEntry {
+	if lock == nil {
+		return nil
+	}
+	copy := *lock
+	return &copy
+}
+
+func cloneGlobalLock(lock *model.GlobalLockEntry) *model.GlobalLockEntry {
+	if lock == nil {
+		return nil
+	}
+	copy := *lock
+	return &copy
 }
