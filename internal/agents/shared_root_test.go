@@ -3,6 +3,7 @@ package agents
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/alvinunreal/lazyskills/internal/model"
@@ -87,6 +88,187 @@ func TestSharedRootInfoOutsideAnchorRealDirectoryNotShared(t *testing.T) {
 	}
 	if _, _, shared := sharedRootInfo(realRoot, home); shared {
 		t.Fatalf("expected real directory outside anchor to not be flagged as shared")
+	}
+}
+
+// TestSharedRootInfoIgnoresDarwinSystemVarAlias covers the macOS release-
+// validation failure mode: walking an external root under /var/folders from
+// the volume root must not treat the OS /var -> /private/var alias as shared.
+func TestSharedRootInfoIgnoresDarwinSystemVarAlias(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Darwin system path aliases only apply on macOS")
+	}
+	info, err := os.Lstat("/var")
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Skip("/var is not a symlink on this system")
+	}
+	external := t.TempDir()
+	if !pathInside(external, "/var") {
+		t.Skip("temp dir is not under /var; system-alias case does not apply")
+	}
+	realRoot := filepath.Join(external, "codex", "skills")
+	if err := os.MkdirAll(realRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Anchor on another top-level hierarchy so the walk starts at "/".
+	anchor := filepath.Join(string(filepath.Separator), "Users", "NonexistentLazySkillsTestHome")
+	if pathInside(realRoot, anchor) {
+		t.Fatalf("precondition: root must be outside anchor, root=%q anchor=%q", realRoot, anchor)
+	}
+	if link, target, shared := sharedRootInfo(realRoot, anchor); shared {
+		t.Fatalf("expected Darwin /var system alias not to flag real external root as shared, link=%q target=%q", link, target)
+	}
+}
+
+// TestDarwinSystemPathAliasWhitelist is a portable unit check of the exact
+// Darwin allow-list: only the three OS aliases match, and only on Darwin.
+func TestDarwinSystemPathAliasWhitelist(t *testing.T) {
+	cases := []struct {
+		link, target string
+		wantDarwin   bool
+	}{
+		{"/var", "/private/var", true},
+		{"/tmp", "/private/tmp", true},
+		{"/etc", "/private/etc", true},
+		// Same-basename user link must never be trusted.
+		{"/alias", "/somewhere/alias", false},
+		{"/var", "/private/var-evil", false},
+		{"/var", "/private/tmp", false},
+		{"/var/folders", "/private/var/folders", false},
+		{"/tmp/foo", "/private/tmp/foo", false},
+		{"/etc", "/private/etx", false},
+		{"", "/private/var", false},
+		{"/var", "", false},
+	}
+	for _, tc := range cases {
+		got := isDarwinSystemPathAlias(tc.link, tc.target)
+		want := tc.wantDarwin && runtime.GOOS == "darwin"
+		if got != want {
+			t.Fatalf("isDarwinSystemPathAlias(%q, %q) = %v, want %v (GOOS=%s)",
+				tc.link, tc.target, got, want, runtime.GOOS)
+		}
+	}
+}
+
+// TestSharedRootInfoDetectsSameBasenameAncestorSymlink ensures a user-created
+// alias -> somewhere/alias redirect (same basename) remains shared. The old
+// basename heuristic would have skipped this unsafely.
+func TestSharedRootInfoDetectsSameBasenameAncestorSymlink(t *testing.T) {
+	home := t.TempDir()
+	external := t.TempDir()
+
+	targetHome := filepath.Join(external, "somewhere", "alias")
+	targetSkills := filepath.Join(targetHome, "skills")
+	if err := os.MkdirAll(targetSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(external, "alias")
+	if err := os.Symlink(targetHome, alias); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(alias, "skills")
+	link, gotTarget, shared := sharedRootInfo(root, home)
+	if !shared {
+		t.Fatal("expected same-basename ancestor symlink to be flagged as shared")
+	}
+	if link != alias {
+		t.Fatalf("expected link %q, got %q", alias, link)
+	}
+	if gotTarget != targetHome {
+		t.Fatalf("expected target %q, got %q", targetHome, gotTarget)
+	}
+}
+
+// TestSharedRootInfoDetectsNearMissSystemAliasShape ensures a user-created
+// symlink that merely resembles a Darwin OS alias (var -> private/var under a
+// temp tree) is still treated as shared.
+func TestSharedRootInfoDetectsNearMissSystemAliasShape(t *testing.T) {
+	home := t.TempDir()
+	external := t.TempDir()
+
+	privateVar := filepath.Join(external, "private", "var")
+	if err := os.MkdirAll(filepath.Join(privateVar, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeVar := filepath.Join(external, "var")
+	if err := os.Symlink(privateVar, fakeVar); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(fakeVar, "skills")
+	link, gotTarget, shared := sharedRootInfo(root, home)
+	if !shared {
+		t.Fatal("expected near-miss var -> private/var user symlink to be flagged as shared")
+	}
+	if link != fakeVar {
+		t.Fatalf("expected link %q, got %q", fakeVar, link)
+	}
+	if gotTarget != privateVar {
+		t.Fatalf("expected target %q, got %q", privateVar, gotTarget)
+	}
+}
+
+// TestSharedRootInfoDetectsDeepSameBasenameSymlink ensures deeper same-basename
+// redirects (skills -> ../other/skills) remain shared under the anchor walk.
+func TestSharedRootInfoDetectsDeepSameBasenameSymlink(t *testing.T) {
+	home := t.TempDir()
+	other := filepath.Join(home, "other", "skills")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	codexHome := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(codexHome, "skills")
+	if err := os.Symlink(other, linked); err != nil {
+		t.Fatal(err)
+	}
+	link, target, shared := sharedRootInfo(linked, home)
+	if !shared {
+		t.Fatal("expected deep same-basename symlink to be flagged as shared")
+	}
+	if link != linked {
+		t.Fatalf("expected link %q, got %q", linked, link)
+	}
+	if target != other {
+		t.Fatalf("expected target %q, got %q", other, target)
+	}
+}
+
+// TestCheckDestructivePathRefusesOutsideAnchorAncestorSymlink is the end-to-
+// end guard: when a skills root sits outside anchor beneath an ancestor
+// symlink, live destructive validation must refuse. Walking only below a
+// common prefix with anchor would miss ancestor redirects on the root side.
+func TestCheckDestructivePathRefusesOutsideAnchorAncestorSymlink(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	external := t.TempDir()
+
+	canonical := filepath.Join(external, "canonical-home")
+	if err := os.MkdirAll(filepath.Join(canonical, "skills", "demo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(external, "alias")
+	if err := os.Symlink(canonical, alias); err != nil {
+		t.Fatal(err)
+	}
+	// skills is a real directory reached only through the ancestor alias.
+	skillPath := filepath.Join(alias, "skills", "demo")
+	info, err := os.Lstat(filepath.Join(alias, "skills"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("precondition: skills dir itself must not be a symlink")
+	}
+
+	e := Env{
+		Home:       home,
+		Vars:       map[string]string{"CODEX_HOME": alias},
+		ExistsFunc: pathExists,
+	}
+	if err := CheckDestructivePathWithEnv(skillPath, cwd, e); err == nil {
+		t.Fatal("expected destructive check to refuse path under outside-anchor ancestor symlink")
 	}
 }
 

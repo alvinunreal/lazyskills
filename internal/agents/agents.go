@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -347,9 +348,11 @@ type sharedRootResult struct {
 // component. anchor is cwd for project-scope locations and the user's home
 // directory for global-scope locations.
 //
-// When root sits under anchor, each path component of root strictly below
-// anchor is Lstat-ed in turn; the first symlinked component means everything
-// under it (including root) is shared with wherever the link resolves to.
+// When root sits under a non-empty anchor, each path component of root
+// strictly below anchor is Lstat-ed in turn; the first symlinked component
+// means everything under it (including root) is shared with wherever the
+// link resolves to. Restricting the walk to below anchor ignores system
+// symlinks above the scope boundary when home itself lives under them.
 //
 // When root is NOT under anchor (e.g. CODEX_HOME=/alias pointing outside the
 // home directory), every path component needed to reach root is walked from
@@ -357,10 +360,15 @@ type sharedRootResult struct {
 // detected even when /alias/skills itself is an ordinary directory. A normal
 // non-symlink external root remains usable.
 //
-// A missing component after an earlier symlink is never reached: the walk
-// returns shared at the first symlink. A missing component with no prior
-// symlink means the path does not exist yet and is reported not-shared.
-// Does not use EvalSymlinks.
+// On Darwin only, the exact volume-root OS aliases /var -> /private/var,
+// /tmp -> /private/tmp, and /etc -> /private/etc are skipped while walking
+// so macOS temp paths under /var/folders are not false-positive shared roots.
+// No basename heuristic and no user-created link is trusted.
+//
+// A missing component after an earlier (non-skipped) symlink is never
+// reached: the walk returns shared at the first such symlink. A missing
+// component with no prior shared symlink means the path does not exist yet
+// and is reported not-shared. Does not use EvalSymlinks.
 func sharedRootInfo(root, anchor string) (link, target string, shared bool) {
 	root = filepath.Clean(root)
 	anchor = filepath.Clean(anchor)
@@ -374,8 +382,8 @@ func sharedRootInfo(root, anchor string) (link, target string, shared bool) {
 	start := pathWalkStart(root)
 	if pathInside(root, anchor) && anchor != "" && anchor != "." {
 		// Restrict the walk to components strictly below anchor so system
-		// symlinks above the scope boundary (e.g. macOS /var -> /private/var
-		// when home lives under /var/...) are not false-positives.
+		// symlinks above the scope boundary are not false-positives when the
+		// anchor itself lives under them (e.g. home under /var/folders).
 		start = anchor
 	}
 	if root == start {
@@ -391,9 +399,10 @@ func sharedRootInfo(root, anchor string) (link, target string, shared bool) {
 }
 
 // walkSymlinkComponents Lstats each path component from start down to root
-// (exclusive of start, inclusive of root). Returns at the first symlink.
-// Missing components (ErrNotExist) with no earlier symlink mean the path is
-// not a live shared root. Any other inspection error fails closed as shared.
+// (exclusive of start, inclusive of root). Returns at the first symlink that
+// is not a Darwin system path alias. Missing components (ErrNotExist) with
+// no earlier shared symlink mean the path is not a live shared root. Any
+// other inspection error fails closed as shared.
 func walkSymlinkComponents(root, start string) (link, target string, shared bool) {
 	root = filepath.Clean(root)
 	start = filepath.Clean(start)
@@ -421,7 +430,12 @@ func walkSymlinkComponents(root, start string) (link, target string, shared bool
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			// Reuse the Lstat result; only Readlink is needed for the target.
-			return readlinkDetails(current)
+			link, target, shared = readlinkDetails(current)
+			if shared && isDarwinSystemPathAlias(link, target) {
+				// Exact Darwin OS prefix alias: keep walking.
+				continue
+			}
+			return link, target, shared
 		}
 	}
 	return "", "", false
@@ -442,6 +456,31 @@ func pathWalkStart(path string) string {
 	// Relative path: walk from "." is not meaningful for shared-root
 	// detection; callers typically pass absolute roots.
 	return ""
+}
+
+// darwinSystemPathAliases is the exact Darwin volume-root symlink set that
+// rewrites legacy paths to /private/... Without skipping these, every walk
+// from "/" through /var/folders temp dirs false-positives as shared.
+// Keys and values are filepath.Clean absolute paths only.
+var darwinSystemPathAliases = map[string]string{
+	"/var": "/private/var",
+	"/tmp": "/private/tmp",
+	"/etc": "/private/etc",
+}
+
+// isDarwinSystemPathAlias reports whether link -> target is one of the exact
+// Darwin OS volume-root path aliases. Non-Darwin platforms always return
+// false. Same-basename user links (e.g. /alias -> /somewhere/alias) and
+// near-miss targets are never trusted.
+func isDarwinSystemPathAlias(link, target string) bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	if link == "" || target == "" {
+		return false
+	}
+	want, ok := darwinSystemPathAliases[filepath.Clean(link)]
+	return ok && want == filepath.Clean(target)
 }
 
 // pathInside reports whether path is equal to root or a descendant of root
