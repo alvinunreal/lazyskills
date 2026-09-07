@@ -39,6 +39,16 @@ func TestBuildPrioritizesAndSanitizesFindings(t *testing.T) {
 	}
 }
 
+func TestBuildIncludesMissingCommandTools(t *testing.T) {
+	report := Build(model.ScanResult{Preflight: &model.Preflight{CanRunSkills: false}})
+	if len(report.Findings) != 1 || report.Findings[0].Type != "missing_skill_tools" || report.Findings[0].Severity != "error" {
+		t.Fatalf("expected missing tools error, got %#v", report)
+	}
+	if !strings.Contains(report.Findings[0].Advice, "Node.js and npm") {
+		t.Fatalf("unexpected missing tools advice: %q", report.Findings[0].Advice)
+	}
+}
+
 func TestRestoreAdviceQuotesShellMetacharacters(t *testing.T) {
 	report := Build(model.ScanResult{Skills: []*model.Skill{{
 		Name:  "$(bad)'name",

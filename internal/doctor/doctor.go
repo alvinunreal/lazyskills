@@ -40,6 +40,13 @@ func Build(result model.ScanResult) Report {
 		Cwd:      compat.SanitizeMetadata(result.Cwd),
 		Findings: make([]Finding, 0, len(result.HealthIssues)),
 	}
+	if result.Preflight != nil && !result.Preflight.CanRunSkills {
+		report.add("Workspace", "", "", model.HealthIssue{
+			Type:     "missing_skill_tools",
+			Severity: "error",
+			Message:  "LazySkills cannot run skill commands because neither the skills CLI nor Node.js with npm and npx is available.",
+		})
+	}
 	for _, issue := range result.HealthIssues {
 		report.add("Workspace", "", "", issue)
 	}
@@ -140,6 +147,8 @@ func title(issueType string) string {
 		return "Corrupt global lock file"
 	case "shared_scope_root":
 		return "Shared skills root"
+	case "missing_skill_tools":
+		return "Missing skill command tools"
 	default:
 		return strings.ReplaceAll(compat.SanitizeMetadata(issueType), "_", " ")
 	}
@@ -175,6 +184,8 @@ func advice(issueType, scope, skillName string) string {
 		return "This location is shared through a symlinked skills root. Repair it at the canonical source."
 	case "ghost_agent_skill":
 		return "Move or reinstall it through the canonical skills directory if it should be shared."
+	case "missing_skill_tools":
+		return "Install the skills CLI, or install Node.js and npm so LazySkills can use npx."
 	default:
 		return "Review this configuration and run lazyskills doctor again."
 	}
