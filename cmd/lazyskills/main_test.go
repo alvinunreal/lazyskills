@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/alvinunreal/lazyskills/internal/buildinfo"
+	"github.com/alvinunreal/lazyskills/internal/doctor"
 	"github.com/alvinunreal/lazyskills/internal/registry"
 	"github.com/alvinunreal/lazyskills/internal/selfupdate"
 )
@@ -168,6 +169,37 @@ func TestCLIFind(t *testing.T) {
 
 	if len(res.Results) != 1 || res.Results[0].Slug != "skill-1" {
 		t.Errorf("unexpected results: %+v", res.Results)
+	}
+}
+
+func TestCLIDoctor(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+
+	out, err := captureRunStdout(t, []string{"doctor", "--cwd", project})
+	if err != nil {
+		t.Fatalf("doctor returned an error: %v", err)
+	}
+	if !strings.Contains(out, "LazySkills doctor") || !strings.Contains(out, "Healthy. No health issues found.") {
+		t.Fatalf("unexpected doctor text output: %q", out)
+	}
+
+	out, err = captureRunStdout(t, []string{"doctor", "--json", "--cwd", project})
+	if err != nil {
+		t.Fatalf("doctor JSON returned an error: %v", err)
+	}
+	var report doctor.Report
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("doctor did not return JSON: %v\n%s", err, out)
+	}
+	if report.Cwd == "" || len(report.Findings) != 0 {
+		t.Fatalf("unexpected doctor report: %#v", report)
+	}
+
+	_, err = captureRunStdout(t, []string{"doctor", "extra"})
+	if err == nil || !strings.Contains(err.Error(), "usage: lazyskills doctor") {
+		t.Fatalf("expected doctor usage error, got %v", err)
 	}
 }
 

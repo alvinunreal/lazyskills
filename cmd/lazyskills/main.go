@@ -164,6 +164,9 @@ func run(args []string) error {
 	if len(args) > 0 && args[0] == "restore" {
 		return runRestore(args[1:])
 	}
+	if len(args) > 0 && args[0] == "doctor" {
+		return runDoctor(args[1:])
+	}
 	if len(args) == 0 {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -179,7 +182,7 @@ func run(args []string) error {
 			return err
 		}
 		if fs.NArg() > 0 {
-			return fmt.Errorf("usage: lazyskills [--cwd <path>] | lazyskills scan --json [--cwd <path>] | lazyskills restore [--global|--project|--all] [--yes] [skills...] | lazyskills update [--check] [--print-command] | lazyskills find --json <query> | lazyskills version")
+			return fmt.Errorf("usage: lazyskills [--cwd <path>] | lazyskills scan --json [--cwd <path>] | lazyskills doctor [--json] [--cwd <path>] | lazyskills restore [--global|--project|--all] [--yes] [skills...] | lazyskills update [--check] [--print-command] | lazyskills find --json <query> | lazyskills version")
 		}
 		if *cwd == "" {
 			var err error

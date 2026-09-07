@@ -104,6 +104,23 @@ For agent-friendly registry search without opening the TUI:
 lazyskills find --json "browser automation"
 ```
 
+### Doctor
+
+Run a read-only health report for the current project:
+
+```bash
+lazyskills doctor
+```
+
+It ranks scan errors before warnings and shows the affected skill or workspace, path, and safe next step. Use structured output in scripts or other agents:
+
+```bash
+lazyskills doctor --json
+lazyskills doctor --cwd /path/to/project
+```
+
+Doctor never changes skills or lock files. It reports findings and points to commands such as `lazyskills restore` when a locked skill is missing from disk.
+
 ### Restore from lock files
 
 Restore skills that are recorded in the project or global lock file but missing from disk:
