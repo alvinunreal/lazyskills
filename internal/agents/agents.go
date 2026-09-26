@@ -315,6 +315,16 @@ func LocationsWithEnv(cwd string, e Env) []Location {
 		}
 	}
 	for _, a := range registry {
+		// OpenCode supports project-local skills in its native directory as
+		// well as the shared .agents/skills directory. Put the native location
+		// first so per-agent visibility prefers it when both contain a skill.
+		if a.Name == "opencode" {
+			nativeRoot := filepath.Join(cwd, ".opencode", "skills")
+			if !homeIsCwd && !isUnderAnyGlobalRoot(filepath.Clean(nativeRoot), globalRoots) {
+				shared := sharedFor(nativeRoot, cwd)
+				add(Location{Root: nativeRoot, Scope: model.ScopeProject, AgentName: a.Name, SharedRoot: shared.shared, SharedRootLink: shared.link, SharedRootTarget: shared.target})
+			}
+		}
 		projectRoot := filepath.Join(cwd, filepath.FromSlash(a.ProjectDir))
 		// Skip project locations that are, or live inside, a global skills root.
 		// Otherwise running from within the global tree (e.g. inside

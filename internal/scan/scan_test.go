@@ -59,6 +59,55 @@ func TestUniversalProjectVisibilityForUniversalAgents(t *testing.T) {
 	}
 }
 
+func TestOpenCodeNativeProjectSkillsAndDiagnostics(t *testing.T) {
+	withHome(t)
+	cwd := t.TempDir()
+	nativeRoot := filepath.Join(cwd, ".opencode", "skills")
+	sharedRoot := filepath.Join(cwd, ".agents", "skills")
+	writeSkill(t, filepath.Join(nativeRoot, "shared-name"), "Shared Name", "native copy")
+	writeSkill(t, filepath.Join(sharedRoot, "shared-name"), "Shared Name", "universal copy")
+	if err := os.MkdirAll(filepath.Join(nativeRoot, "missing"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(nativeRoot, "invalid"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nativeRoot, "invalid", "SKILL.md"), []byte("---\nname: 123\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shared, missing, invalid *model.Skill
+	for i := range res.Skills {
+		switch res.Skills[i].Name {
+		case "Shared Name":
+			shared = res.Skills[i]
+		case "missing":
+			missing = res.Skills[i]
+		case "invalid":
+			invalid = res.Skills[i]
+		}
+	}
+	if shared == nil || missing == nil || invalid == nil {
+		t.Fatalf("expected native, missing, and invalid skills, got %#v", res.Skills)
+	}
+	if got, ok := observedForAgent(shared, "opencode"); !ok || got.Path != filepath.Join(nativeRoot, "shared-name") {
+		t.Fatalf("expected native path to be preferred for OpenCode, got %#v, %v", got, ok)
+	}
+	if len(shared.ObservedPaths) < 2 {
+		t.Fatalf("expected universal and native observations to be retained, got %#v", shared.ObservedPaths)
+	}
+	if !hasIssue(missing.HealthIssues, "missing_skill_md") {
+		t.Fatalf("expected missing native SKILL.md diagnostic, got %#v", missing.HealthIssues)
+	}
+	if !hasIssue(invalid.HealthIssues, "invalid_frontmatter") {
+		t.Fatalf("expected invalid native SKILL.md diagnostic, got %#v", invalid.HealthIssues)
+	}
+}
+
 func TestClaudeProjectDir(t *testing.T) {
 	withHome(t)
 	cwd := t.TempDir()

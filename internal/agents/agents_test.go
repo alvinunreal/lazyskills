@@ -182,3 +182,25 @@ func TestLocationsKeepProjectDirsOutsideHome(t *testing.T) {
 	}
 	t.Fatalf("expected project location %q outside home", want)
 }
+
+func TestOpenCodeHasNativeAndUniversalProjectLocations(t *testing.T) {
+	home := "/home/test"
+	cwd := "/repo"
+	locations := LocationsWithEnv(cwd, testEnv(home))
+	want := map[string]bool{
+		filepath.Join(cwd, ".opencode", "skills"): false,
+		filepath.Join(cwd, ".agents", "skills"):   false,
+	}
+	for _, loc := range locations {
+		if loc.Scope == "project" && loc.AgentName == "opencode" {
+			if _, ok := want[loc.Root]; ok {
+				want[loc.Root] = true
+			}
+		}
+	}
+	for root, found := range want {
+		if !found {
+			t.Errorf("expected OpenCode project location %q", root)
+		}
+	}
+}
