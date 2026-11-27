@@ -53,6 +53,12 @@ Or use Homebrew:
 brew install --cask alvinunreal/tap/lazyskills
 ```
 
+If macOS says LazySkills is harmful or kills it on launch (it is not notarized yet), upgrade to the latest cask or clear the quarantine flag once:
+
+```bash
+xattr -d com.apple.quarantine "$(which lazyskills)"
+```
+
 Windows:
 
 ```powershell

@@ -111,6 +111,14 @@ homebrew_casks:
     homepage: https://github.com/alvinunreal/lazyskills
     description: Mission control for agent skills to stay lazy.
     license: MIT
+    # The binary is not notarized, so Gatekeeper kills it on first run unless
+    # the quarantine flag that Homebrew adds to downloads is removed (#40).
+    hooks:
+      post:
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/lazyskills"]
+          end
 
 scoops:
   - name: lazyskills
