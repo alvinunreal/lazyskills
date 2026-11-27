@@ -30,7 +30,9 @@ func (m *mockFetcher) FetchRelease(ctx context.Context, url string) (*selfupdate
 }
 
 func TestCLIUpdate(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	cacheHome := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("HOME", cacheHome) // os.UserCacheDir uses $HOME/Library/Caches on macOS
 
 	oldVer := buildinfo.Version
 	oldCommit := buildinfo.Commit

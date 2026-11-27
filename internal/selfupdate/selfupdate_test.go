@@ -102,7 +102,9 @@ func TestDetectChannel(t *testing.T) {
 }
 
 func TestPlanAndCacheTTL(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	cacheHome := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("HOME", cacheHome) // os.UserCacheDir uses $HOME/Library/Caches on macOS
 	oldVer := buildinfo.Version
 	oldCommit := buildinfo.Commit
 	buildinfo.Version = "v1.0.0"
@@ -185,6 +187,7 @@ func TestPlanAndCacheTTL(t *testing.T) {
 func TestWriteCacheReadCacheRoundTrip(t *testing.T) {
 	cacheRoot := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+	t.Setenv("HOME", cacheRoot) // os.UserCacheDir uses $HOME/Library/Caches on macOS
 
 	rel := &GitHubRelease{
 		TagName: "v1.2.3",
